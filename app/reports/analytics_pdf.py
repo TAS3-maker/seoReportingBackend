@@ -5,8 +5,12 @@ from pathlib import Path
 from typing import Any
 
 import reportlab
+from app.reports.formatting import report_number, report_position
+from app.reports.insights import report_signals
 from app.reports.pagespeed import pagespeed_section
 
+from reportlab.graphics.charts.piecharts import Pie
+from reportlab.graphics.shapes import Drawing, Rect, String
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER, TA_LEFT
 from reportlab.lib.pagesizes import A4
@@ -87,10 +91,8 @@ def _format_number(value: Any) -> str:
         return "No data"
     if isinstance(value, bool):
         return str(value)
-    if isinstance(value, int):
-        return f"{value:,}"
-    if isinstance(value, float):
-        return f"{value:,.2f}".rstrip("0").rstrip(".")
+    if isinstance(value, (int, float)):
+        return report_number(value)
     return _safe_text(value)
 
 
@@ -104,10 +106,10 @@ def _kpi_change_text(kpi: dict[str, Any]) -> str:
         if trend == "steady":
             return "No change in position"
         wording = "better" if trend == "up" else "worse"
-        return f"{abs(change):.2f} positions {wording}"
+        return f"{report_number(abs(change))} positions {wording}"
     if unit == "percentage_points":
-        return f"{change:+.2f} percentage points"
-    return f"{change:+.2f}% vs previous period"
+        return f"{report_number(change, signed=True)} percentage points"
+    return f"{report_number(change, signed=True)}% vs previous period"
 
 
 class _LineChart(Flowable):
@@ -235,6 +237,31 @@ class _PlanPill(Paragraph):
         super().draw()
 
 
+def _visitor_channel_chart(channels, width):
+    ranked = sorted(channels.items(), key=lambda item: (-item[1], item[0]))
+    if len(ranked) > 6:
+        ranked = ranked[:5] + [("Remaining channels", sum(count for _, count in ranked[5:]))]
+    total = sum(count for _, count in ranked)
+    palette = [_TEAL, _BLUE, _GOLD, colors.HexColor("#845A92"), _GREEN, _MUTED]
+    drawing = Drawing(width, 118)
+    pie = Pie()
+    pie.x, pie.y = 8, 6
+    pie.width = pie.height = 104
+    pie.data = [count for _, count in ranked]
+    for index, (label, count) in enumerate(ranked):
+        color = palette[index]
+        pie.slices[index].fillColor = color
+        pie.slices[index].strokeColor = colors.white
+        y = 104 - index * 17
+        drawing.add(Rect(136, y, 8, 8, fillColor=color, strokeColor=None))
+        drawing.add(String(151, y, label, fontName=_FONT, fontSize=9, fillColor=_NAVY))
+        share = report_number(100 * count / total)
+        drawing.add(String(width - 8, y, f"{count:,}  ({share}%)", textAnchor="end",
+                           fontName=_FONT_BOLD, fontSize=9, fillColor=_NAVY))
+    drawing.add(pie)
+    return drawing
+
+
 def _paragraph(value: Any, style: ParagraphStyle) -> Paragraph:
     return Paragraph(escape(_safe_text(value if value is not None else "")), style)
 
@@ -251,7 +278,8 @@ def _make_kpi_card(kpi: dict[str, Any], styles, hide_comparison: bool) -> list[P
     label_style = ParagraphStyle(
         "AnalyticsKpiSource", parent=styles["kpi_label"], textColor=card_accent
     )
-    value = _format_number(kpi.get("value"))
+    formatter = report_position if kpi.get("key") == "gsc_position" else _format_number
+    value = formatter(kpi.get("value"))
     if kpi.get("key") == "gsc_ctr" and kpi.get("value") is not None:
         value += "%"
     paragraphs = [
@@ -268,6 +296,7 @@ def _panel_row(
     width: float,
     *,
     metric_cards: bool = False,
+    background: colors.Color = _PALE,
 ) -> Table:
     panel_width = (width - _GUTTER * (len(panels) - 1)) / len(panels)
     cells = []
@@ -279,7 +308,7 @@ def _panel_row(
         cells.append(panel)
         widths.append(panel_width)
 
-    padding = 7 if metric_cards else 0
+    padding = 9 if metric_cards else 0
     commands = [
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ("LEFTPADDING", (0, 0), (-1, -1), padding),
@@ -291,13 +320,22 @@ def _panel_row(
         for index in range(0, len(cells), 2):
             cell = (index, 0)
             commands.extend([
-                ("BACKGROUND", cell, cell, _PALE),
-                ("BOX", cell, cell, 0.6, _GRID),
+                ("BACKGROUND", cell, cell, background),
+                ("LINEBEFORE", cell, cell, 2, _TEAL),
             ])
     return Table(
         [cells], colWidths=widths, hAlign="LEFT", spaceAfter=_GUTTER,
         style=TableStyle(commands),
     )
+
+
+def _table_value(column, value):
+    name = str(column).lower().replace("_", "").replace(" ", "").replace(".", "")
+    if name in {"position", "avgposition", "averageposition", "averagesearchposition"}:
+        return report_position(value)
+    if isinstance(value, (int, float)):
+        return _format_number(value)
+    return value
 
 
 def _data_table(
@@ -326,7 +364,7 @@ def _data_table(
             for column in columns
         ],
     ] + [
-        [_paragraph(row.get(column, ""), cell_style) for column in columns]
+        [_paragraph(_table_value(column, row.get(column, "")), cell_style) for column in columns]
         for row in rows
     ]
     column_widths = [available_width / len(columns)] * len(columns)
@@ -371,6 +409,7 @@ def generate_analytics_pdf(
     *,
     comparison: bool = False,
     next_plans: list[str] | None = None,
+    openai_api_key: str | None = None,
 ) -> bytes:
     _register_fonts()
     output = io.BytesIO()
@@ -505,8 +544,8 @@ def generate_analytics_pdf(
                 )
             ],
             [
-                _paragraph(
-                    "  |  ".join(subtitle_parts),
+                Paragraph(
+                    escape(subtitle_parts[0]) + "<br/>" + escape("  |  ".join(subtitle_parts[1:])),
                     styles["banner_subtitle"],
                 )
             ],
@@ -530,12 +569,35 @@ def generate_analytics_pdf(
             ]
         )
     )
-    story: list[Flowable] = [
-        banner,
-        Paragraph("Performance indicators", styles["section_heading"]),
-    ]
-
+    story: list[Flowable] = [banner]
     kpis = dashboard.get("kpis", [])
+    if openai_api_key:
+        signals = report_signals(kpis, comparison, openai_api_key)
+        heading = "Period highlights" if comparison else "Positive Signals"
+        story.append(Paragraph(heading, styles["section_heading"]))
+        if signals:
+            category_style = ParagraphStyle("SignalCategory", parent=styles["body"],
+                                            fontName=_FONT_BOLD, fontSize=7, leading=10, spaceAfter=2, textColor=_GREEN)
+            title_style = ParagraphStyle("SignalTitle", parent=styles["body"], fontName=_FONT_BOLD,
+                                         fontSize=11, leading=14, spaceBefore=0, spaceAfter=3)
+            cards = []
+            for signal in signals:
+                detail = " ".join(filter(None, [signal["fact"], signal.get("meaning")]))
+                cards.append([
+                    _paragraph(signal["category"].upper(), category_style),
+                    _paragraph(signal["title"], title_style),
+                    _paragraph(detail, styles["body"]),
+                ])
+            for index in range(0, len(cards), 2):
+                story.append(_panel_row(cards[index:index + 2], content_width, metric_cards=True,
+                                        background=colors.HexColor("#E4F4E9")))
+
+        else:
+            message = ("No highlights are available for this reporting period." if comparison else
+                       "No verified improvements are available for the selected periods.")
+            story.append(_paragraph(message, styles["body"]))
+
+    story.append(Paragraph("Performance indicators", styles["section_heading"]))
     if any(kpi.get("value") is not None for kpi in kpis):
         for index in range(0, len(kpis), 4):
             cards = [_make_kpi_card(kpi, styles, comparison) for kpi in kpis[index : index + 4]]
@@ -584,6 +646,13 @@ def generate_analytics_pdf(
             )
     else:
         story.append(Paragraph("No daily trend data is stored for this period.", styles["body"]))
+
+    channels = dashboard.get("visitor_channels")
+    if channels:
+        story.append(Paragraph("Visitor acquisition channels", styles["section_heading"]))
+        story.append(_visitor_channel_chart(channels, content_width))
+        story.append(Paragraph("GA4 users by the channel that first brought them to the site.",
+                               styles["body"]))
 
     tables = dashboard.get("tables", {})
     detail_sections = (
