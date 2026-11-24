@@ -186,6 +186,22 @@ def _clients_by_site(workspace_id: str) -> dict[str, dict[str, Any]]:
     }
 
 
+def _matching_site_client(existing, site_url):
+    exact = existing.get(site_url)
+    if exact is not None:
+        return exact
+    if site_url.startswith("sc-domain:"):
+        domain = site_url.removeprefix("sc-domain:").lower()
+        candidates = (
+            f"https://{domain}/", f"https://{domain}",
+            f"http://{domain}/", f"http://{domain}",
+        )
+        matches = [existing[url] for url in candidates if url in existing]
+    else:
+        return None
+    return matches[0] if len(matches) == 1 else None
+
+
 @google_router.get("/sites")
 def list_sites(user: dict[str, Any] = Depends(protect_route)):
     workspace_id = get_authenticated_workspace_id(user)
@@ -200,7 +216,7 @@ def list_sites(user: dict[str, Any] = Depends(protect_route)):
         connection = connections.get(site["connection_id"])
         if not connection:
             continue
-        client = existing.get(site["site_url"])
+        client = _matching_site_client(existing, site["site_url"])
         sites.append(
             {
                 "site_id": str(site["_id"]),
@@ -257,7 +273,7 @@ def import_sites(payload: SiteImportRequest, user: dict[str, Any] = Depends(prot
             ga4=GA4Integration(enabled=True, property_id=ga4_id) if ga4_id else None,
         )
         name = (item.name or "").strip() or site.get("display_name") or site["site_url"]
-        current = existing.get(site["site_url"])
+        current = _matching_site_client(existing, site["site_url"])
         if current:
             # Re-link an existing client (e.g. after reconnecting the account).
             database["clients"].update_one(
@@ -271,6 +287,7 @@ def import_sites(payload: SiteImportRequest, user: dict[str, Any] = Depends(prot
                     }
                 },
             )
+            existing[site["site_url"]] = current
             updated.append(str(current["_id"]))
             continue
 
