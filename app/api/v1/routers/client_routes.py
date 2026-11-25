@@ -6,6 +6,9 @@ from dotenv import load_dotenv
 
 from fastapi import APIRouter, Cookie, Depends, Response
 from fastapi import HTTPException, status
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from fastapi.routing import APIRoute
 from bson import ObjectId
 from pymongo.errors import DuplicateKeyError
 
@@ -19,6 +22,10 @@ from app.requestModels.req_models import (
 from app.database.connection import get_database
 from app.models.client import Client
 from app.core.security import encrypt_secret, TokenEncryptionError
+from app.integrations.google_service_account import (
+    SERVICE_ACCOUNT_FIELD,
+    service_account_credentials,
+)
 from app.models.workspace import Workspace
 from app.middlewares.protect_route import protect_route
 import jwt
@@ -27,6 +34,7 @@ import os
 
 load_dotenv()
 client_router = APIRouter()
+MAX_SERVICE_ACCOUNT_BYTES = 16 * 1024
 
 
 def get_authenticated_workspace_id(user: dict[str, Any]) -> str:
@@ -272,7 +280,13 @@ def get_current_user(user: dict[str, Any] = Depends(protect_route)):
     workspace_id = get_authenticated_workspace_id(user)
     workspace = get_database()["workspaces"].find_one(
         {"_id": ObjectId(workspace_id)},
-        {"username": 1, "fullname": 1, "openai_api_key_enc": 1, "google_cloud_console_key_enc": 1},
+        {
+            "username": 1,
+            "fullname": 1,
+            "openai_api_key_enc": 1,
+            "google_cloud_console_key_enc": 1,
+            SERVICE_ACCOUNT_FIELD: 1,
+        },
     )
     if not workspace:
         raise HTTPException(
@@ -300,10 +314,28 @@ def get_current_user(user: dict[str, Any] = Depends(protect_route)):
         "fullname": fullname,
         "has_openai_api_key": bool(workspace.get("openai_api_key_enc")),
         "has_google_cloud_console_key": bool(workspace.get("google_cloud_console_key_enc")),
+        "has_google_service_account": bool(workspace.get(SERVICE_ACCOUNT_FIELD)),
     }
 
 
-@client_router.patch("/me")
+class WorkspaceUpdateRoute(APIRoute):
+    def get_route_handler(self):
+        handler = super().get_route_handler()
+
+        async def handle(request):
+            try:
+                return await handler(request)
+            except RequestValidationError as error:
+                # FastAPI's default validation response includes the submitted values.
+                details = [
+                    {key: issue[key] for key in ("loc", "msg", "type")}
+                    for issue in error.errors()
+                ]
+                return JSONResponse(status_code=422, content={"detail": details})
+
+        return handle
+
+
 def update_current_user(
     workspace_update: WorkspaceUpdateRequest,
     response: Response,
@@ -311,6 +343,20 @@ def update_current_user(
 ):
     workspace_id = get_authenticated_workspace_id(user)
     updates = workspace_update.model_dump(exclude_unset=True)
+    if "google_service_account_json" in updates:
+        secret = updates.pop("google_service_account_json")
+        document = secret.get_secret_value().removeprefix("\ufeff") if secret is not None else ""
+        try:
+            if len(document.encode("utf-8")) > MAX_SERVICE_ACCOUNT_BYTES:
+                raise HTTPException(413, "The Google service account file must be 16 KiB or smaller.")
+            # A PEM can parse successfully without supporting Google's RSA signatures.
+            service_account_credentials(document).sign_bytes(b"")
+            updates[SERVICE_ACCOUNT_FIELD] = encrypt_secret(document)
+        except (TypeError, ValueError):
+            raise HTTPException(422, "Provide a valid Google service account JSON string.") from None
+        except TokenEncryptionError as error:
+            raise HTTPException(503, "Workspace secret encryption is unavailable.") from error
+
     for field in ("openai_api_key", "google_cloud_console_key"):
         if field not in updates:
             continue
@@ -366,7 +412,16 @@ def update_current_user(
         "fullname": updated_workspace["fullname"],
         "has_openai_api_key": bool(updated_workspace.get("openai_api_key_enc")),
         "has_google_cloud_console_key": bool(updated_workspace.get("google_cloud_console_key_enc")),
+        "has_google_service_account": bool(updated_workspace.get(SERVICE_ACCOUNT_FIELD)),
     }
+
+
+client_router.add_api_route(
+    "/me",
+    update_current_user,
+    methods=["PATCH"],
+    route_class_override=WorkspaceUpdateRoute,
+)
 
 
 @client_router.post("/clients", status_code=status.HTTP_201_CREATED)

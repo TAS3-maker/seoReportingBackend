@@ -61,7 +61,7 @@ const response = await fetch(`${API_BASE_URL}/api/v1/auth/register`, {
 | `POST` | `/api/v1/auth/login` | None | Sign in to a workspace |
 | `POST` | `/api/v1/auth/logout` | None | Clear the login cookie |
 | `GET` | `/api/v1/me` | Required | Return the authenticated workspace profile |
-| `PATCH` | `/api/v1/me` | Required | Update workspace profile data |
+| `PATCH` | `/api/v1/me` | Required | Update workspace profile data or upload and replace its Google service account JSON |
 | `GET` | `/api/v1/clients` | Required | List clients owned by the workspace |
 | `POST` | `/api/v1/clients` | Required | Create a client |
 | `GET` | `/api/v1/clients/{client_id}` | Required | Load a client's settings |
@@ -86,6 +86,23 @@ The workspace signup body contains `username`, `password`, and `fullname`. Integ
 `GET /api/v1/me` and its `/api/v1/auth/me` alias return workspace profile data. Use `GET /api/v1/clients` to load each client's name and integrations for the workspace UI. To log out, send `POST /api/v1/auth/logout` with `credentials: "include"`; it clears the HttpOnly cookie even if the session has expired. An unauthenticated or expired session returns `401`.
 
 Each client returned by `GET /api/v1/clients` includes `client_id`, `name`, `integrations`, `created_at`, and `updated_at`.
+
+### Workspace Google service account
+
+Use `has_google_service_account` from `GET /api/v1/me` to show whether the workspace has a file and label the action **Upload JSON** or **Replace JSON**. Read the selected file as text and include it as `google_service_account_json` in the workspace update. The file can be up to 16 KiB.
+
+```js
+const response = await fetch(`${API_BASE_URL}/api/v1/me`, {
+  method: "PATCH",
+  credentials: "include",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ google_service_account_json: await file.text() }),
+});
+```
+
+A successful upload returns the updated workspace profile with `has_google_service_account: true`. Omit `google_service_account_json` from updates that should preserve the saved credential. The backend encrypts the JSON string using `TOKEN_ENCRYPTION_KEY`, then decrypts and parses it when making Google requests. Profile responses expose its presence only.
+
+Grant the file's `client_email` read access to the configured Search Console property, GA4 property, or spreadsheet. Clients created manually use the workspace key on their next refresh. Clients linked through Google account import use their linked account.
 
 ## Client-scoped data endpoints
 

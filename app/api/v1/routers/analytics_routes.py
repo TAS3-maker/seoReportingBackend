@@ -782,7 +782,10 @@ def _refresh_status(function, *args) -> dict[str, Any]:
         logger.warning("Google token refresh failed", exc_info=True)
         return {
             "status": "error",
-            "detail": "Google access expired or was revoked. Reconnect the Google account in Settings.",
+            "detail": (
+                "Google rejected the credentials. Reconnect the linked Google account "
+                "or replace the workspace service account JSON in Settings."
+            ),
         }
     except Exception:
         logger.exception("Integration refresh failed")

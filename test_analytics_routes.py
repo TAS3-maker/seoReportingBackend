@@ -256,6 +256,7 @@ class AnalyticsRouteTests(unittest.TestCase):
             client_id=client_id,
             period="monthly",
             user={"workspace_id": workspace_id},
+            bounds=None,
         )
 
         self.assertEqual(events, ["ga4", "gsc", "google_sheets", "database"])

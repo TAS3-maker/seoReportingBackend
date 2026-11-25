@@ -130,7 +130,7 @@ def generate_monthly_report(
             result = refresh_sources(workspace_id, client_id, "monthly", month_start, bounds=bounds)
             gsc = result.get("gsc", {})
             if gsc.get("status") == "not_configured":
-                raise ReportGenerationError("Search Console is not set up for this website.")
+                raise ReportGenerationError(gsc.get("detail") or "Search Console is not set up for this website.")
             for source, label in (("gsc", "Search Console"), ("ga4", "Google Analytics")):
                 if result.get(source, {}).get("status") == "error":
                     raise ReportGenerationError(

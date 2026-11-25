@@ -1,20 +1,30 @@
+import json
 import os
 import unittest
 from unittest.mock import MagicMock, Mock, patch
 
 from bson import ObjectId
-from fastapi import HTTPException, Response
+from cryptography.fernet import Fernet
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from fastapi import FastAPI, HTTPException, Response
+from fastapi.testclient import TestClient
 from pymongo.errors import DuplicateKeyError
 
 from app.api.v1.routers.client_routes import (
     _gen_token,
     _verify_pass,
+    client_router,
     create_client,
     delete_client,
     login_workspace,
     register_workspace,
     update_client,
 )
+from app.core.security import decrypt_secret
+from app.integrations.credentials import build_source_client
+from app.integrations.google_service_account import SERVICE_ACCOUNT_FIELD
+from app.middlewares.protect_route import protect_route
 from app.requestModels.req_models import (
     ClientCreateRequest,
     ClientUpdateRequest,
@@ -139,6 +149,101 @@ class WorkspaceRouteTests(unittest.TestCase):
         self.assertIn("samesite=none", cookie)
         self.assertIn("secure", cookie)
         self.assertIn("httponly", cookie)
+
+
+class WorkspaceServiceAccountTests(unittest.TestCase):
+    def setUp(self):
+        self.workspace_id = ObjectId()
+        self.workspace = {"_id": self.workspace_id, "username": "owner", "fullname": "Owner"}
+        self.workspaces = Mock()
+        self.workspaces.find_one.return_value = self.workspace
+        self.workspaces.update_one.side_effect = self.update_workspace
+        database = {"workspaces": self.workspaces}
+        patches = (
+            patch("app.api.v1.routers.client_routes.get_database", return_value=database),
+            patch("app.integrations.workspace_secrets.get_database", return_value=database),
+            patch.dict(os.environ, {"TOKEN_ENCRYPTION_KEY": Fernet.generate_key().decode()}),
+        )
+        for patcher in patches:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+        app = FastAPI()
+        app.include_router(client_router, prefix="/api/v1")
+        app.dependency_overrides[protect_route] = lambda: {"workspace_id": str(self.workspace_id)}
+        self.app = app
+        self.http = TestClient(app)
+        self.addCleanup(self.http.close)
+        self.url = "/api/v1/me"
+
+    def update_workspace(self, query, update):
+        self.assertEqual(query, {"_id": self.workspace_id})
+        self.workspace.update(update["$set"])
+        return Mock(matched_count=1)
+
+    def test_uploaded_key_is_encrypted_and_replacement_is_used_on_next_refresh(self):
+        private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        document = {
+            "type": "service_account",
+            "client_email": "first@example.iam.gserviceaccount.com",
+            "private_key_id": "test-key-id",
+            "private_key": private_key.private_bytes(
+                serialization.Encoding.PEM,
+                serialization.PrivateFormat.PKCS8,
+                serialization.NoEncryption(),
+            ).decode(),
+            "token_uri": "https://oauth2.googleapis.com/token",
+        }
+        client = {"workspace_id": str(self.workspace_id)}
+        self.assertFalse(self.http.get("/api/v1/me").json()["has_google_service_account"])
+        with self.assertRaises(HTTPException) as missing:
+            build_source_client(client, "gsc")
+        self.assertEqual(missing.exception.status_code, 409)
+        self.assertIn("Workspace Settings", missing.exception.detail)
+
+        for email in (document["client_email"], "replacement@example.iam.gserviceaccount.com"):
+            document["client_email"] = email
+            response = self.http.patch(self.url, json={"google_service_account_json": json.dumps(document)})
+            self.assertEqual(response.status_code, 200)
+            self.assertTrue(response.json()["has_google_service_account"])
+            self.assertNotIn("PRIVATE KEY", response.text)
+            self.assertNotIn(SERVICE_ACCOUNT_FIELD, response.json())
+            encrypted = self.workspace[SERVICE_ACCOUNT_FIELD]
+            self.assertNotIn(email, encrypted)
+            self.assertEqual(json.loads(decrypt_secret(encrypted)), document)
+            profile = self.http.get("/api/v1/me").json()
+            self.assertTrue(profile["has_google_service_account"])
+            self.assertNotIn(SERVICE_ACCOUNT_FIELD, profile)
+            with patch("app.integrations.gsc.client.get_gsc_client") as build:
+                build_source_client(client, "gsc")
+            credentials = build.call_args.kwargs["credentials"]
+            self.assertEqual(credentials.service_account_email, email)
+            self.assertEqual(credentials.scopes, ("https://www.googleapis.com/auth/webmasters.readonly",))
+
+        response = self.http.patch(self.url, json={
+            "google_service_account_json": json.dumps({**document, "token_uri": "https://example.test/token"}),
+        })
+        self.assertEqual(response.status_code, 422)
+        self.assertNotIn("PRIVATE KEY", response.text)
+        self.assertEqual(self.workspace[SERVICE_ACCOUNT_FIELD], encrypted)
+
+        response = self.http.patch(self.url, json={"openai_api_key": "example-key"})
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["has_google_service_account"])
+        self.assertEqual(self.workspace[SERVICE_ACCOUNT_FIELD], encrypted)
+
+    def test_upload_requires_authentication_and_sanitizes_parse_errors(self):
+        for invalid_value in ('{"private_key": "private-value"', {"private_key": "private-value"}, None):
+            with self.subTest(value=invalid_value):
+                response = self.http.patch(self.url, json={"google_service_account_json": invalid_value})
+                self.assertEqual(response.status_code, 422)
+                self.assertNotIn("private-value", response.text)
+        response = self.http.patch(self.url, json={"google_service_account_json": "x" * (16 * 1024 + 1)})
+        self.assertEqual(response.status_code, 413)
+
+        del self.app.dependency_overrides[protect_route]
+        self.assertEqual(self.http.patch(self.url, json={"google_service_account_json": "{}"}).status_code, 401)
+        self.workspaces.update_one.assert_not_called()
 
 
 class ClientManagementRouteTests(unittest.TestCase):

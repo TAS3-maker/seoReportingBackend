@@ -7,8 +7,19 @@ from app.integrations.google_oauth import (
     credentials_for_connection,
     get_connection,
 )
+from app.integrations.google_service_account import (
+    InvalidServiceAccount,
+    SERVICE_ACCOUNT_FIELD,
+    service_account_credentials,
+)
+from app.integrations.workspace_secrets import workspace_secret
 
 Source = Literal["gsc", "ga4", "google_sheets"]
+SOURCE_SCOPES: dict[Source, str] = {
+    "gsc": "https://www.googleapis.com/auth/webmasters.readonly",
+    "ga4": "https://www.googleapis.com/auth/analytics.readonly",
+    "google_sheets": "https://www.googleapis.com/auth/spreadsheets.readonly",
+}
 
 
 def user_credentials_for_client(client: dict[str, Any]):
@@ -28,7 +39,17 @@ def user_credentials_for_client(client: dict[str, Any]):
 
 
 def build_source_client(client: dict[str, Any], source: Source):
-    credentials = user_credentials_for_client(client)
+    if client.get("google_connection_id"):
+        credentials = user_credentials_for_client(client)
+    else:
+        document = workspace_secret(client["workspace_id"], SERVICE_ACCOUNT_FIELD)
+        if not document:
+            raise HTTPException(409, "Add a Google service account JSON in Workspace Settings to refresh Google data.")
+        try:
+            credentials = service_account_credentials(document, scopes=(SOURCE_SCOPES[source],))
+        except InvalidServiceAccount:
+            raise HTTPException(409, "Replace the Google service account JSON in Workspace Settings.") from None
+
     if source == "gsc":
         from app.integrations.gsc.client import get_gsc_client
 

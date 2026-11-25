@@ -186,11 +186,20 @@ class ProtectRouteTests(unittest.TestCase):
                 "workspace_id": workspace_id,
                 "username": "workspace-owner",
                 "fullname": "Workspace Owner",
+                "has_openai_api_key": False,
+                "has_google_cloud_console_key": False,
+                "has_google_service_account": False,
             },
         )
         database["workspaces"].find_one.assert_called_once_with(
             {"_id": ObjectId(workspace_id)},
-            {"username": 1, "fullname": 1},
+            {
+                "username": 1,
+                "fullname": 1,
+                "openai_api_key_enc": 1,
+                "google_cloud_console_key_enc": 1,
+                "google_service_account_json_enc": 1,
+            },
         )
 
     def test_me_requires_authentication(self):
