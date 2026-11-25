@@ -7,6 +7,7 @@ from typing import Any
 import reportlab
 from app.reports.formatting import report_number, report_position
 from app.reports.insights import report_signals
+from app.reports.monthly_pdf import generate_monthly_pdf
 from app.reports.pagespeed import pagespeed_section
 
 from reportlab.graphics.charts.piecharts import Pie
@@ -412,6 +413,11 @@ def generate_analytics_pdf(
     openai_api_key: str | None = None,
     google_cloud_console_key: str | None = None,
 ) -> bytes:
+    if period == "monthly":
+        return generate_monthly_pdf(
+            dashboard, client_name, hide_comparison=comparison, next_plans=next_plans,
+            openai_api_key=openai_api_key, google_cloud_console_key=google_cloud_console_key,
+        )
     _register_fonts()
     output = io.BytesIO()
     document = SimpleDocTemplate(
