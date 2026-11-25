@@ -1,5 +1,6 @@
 """Presentation for monthly reports, using the existing analytics dashboard data."""
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from html import escape
 from io import BytesIO
@@ -15,7 +16,7 @@ from reportlab.platypus import Paragraph, Table, TableStyle
 
 from app.reports.formatting import report_number, report_position
 from app.reports.insights import report_signals
-from app.reports.pagespeed import mobile_pagespeed_audit
+from app.reports.pagespeed import pagespeed_audit
 
 _PAGE_WIDTH, _PAGE_HEIGHT = A4
 _MARGIN = 36
@@ -533,30 +534,35 @@ class _MonthlyReport:
             self.text("Delivery data unavailable.", x + 12, 277, _THIRD - 24, size=8.5, color=_MUTED)
         self.text("PageSpeed Insights", _MARGIN, 342, size=15, bold=True)
         self.text(f"{self.site or 'Website'} / Lab performance metrics", _MARGIN, 367, color=_MUTED)
-        right = _MARGIN + _HALF + _GAP
-        for x, title in ((_MARGIN, "Mobile"), (right, "Desktop")):
-            self.box(x, 387, _HALF, 224, border=True)
-            self.text(title, x + 12, 401, _HALF - 24, size=15, bold=True, color=_TEAL)
-        audit, error = mobile_pagespeed_audit(self.site_url, api_key=google_cloud_console_key)
-        if audit is None:
-            self.text(error, _MARGIN + 12, 430, _HALF - 24, color=_MUTED)
-        else:
-            tested_url, timestamp, metrics = audit
-            audited_on = _date(timestamp.partition("T")[0])
-            label = f"{audited_on:%d %B %Y} / PageSpeed Insights" if audited_on else "PageSpeed Insights"
-            self.text(label, _MARGIN + 12, 430, _HALF - 24, size=8.5, color=_MUTED)
-            for i, (name, value) in enumerate(metrics):
-                top = 451 + 33 * i
-                self.line(_MARGIN + 12, top, _MARGIN + _HALF - 12)
-                self.text(name, _MARGIN + 12, top + 9, _HALF - 82, size=9)
-                self.canvas.setFont(_BOLD, 9)
-                self.canvas.setFillColor(_TEAL)
-                self.canvas.drawRightString(_MARGIN + _HALF - 12, _PAGE_HEIGHT - top - 17, value)
-            self.text(tested_url, _MARGIN + 12, 587, _HALF - 24, size=7.5, color=_MUTED)
-        self.text("Desktop audit data unavailable.", right + 12, 430, _HALF - 24, color=_MUTED)
+        strategies = ("mobile", "desktop")
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            audits = [pool.submit(pagespeed_audit, self.site_url, strategy=strategy, api_key=google_cloud_console_key)
+                      for strategy in strategies]
+        for i, (strategy, audit) in enumerate(zip(strategies, audits)):
+            x = _MARGIN + i * (_HALF + _GAP)
+            self.pagespeed_card(x, strategy.title(), *audit.result())
         self.text("PageSpeed measurements are taken when the report is generated.", _MARGIN, 632, color=_MUTED)
         self.note("What to improve next", "Use the available audit as a baseline for follow-up testing after site updates.",
                   _MARGIN, 673, minimum=72)
+
+    def pagespeed_card(self, x, title, audit, error):
+        self.box(x, 387, _HALF, 224, border=True)
+        self.text(title, x + 12, 401, _HALF - 24, size=15, bold=True, color=_TEAL)
+        if audit is None:
+            self.text(error, x + 12, 430, _HALF - 24, color=_MUTED)
+            return
+        tested_url, timestamp, metrics = audit
+        audited_on = _date(timestamp.partition("T")[0])
+        label = f"{audited_on:%d %B %Y} / PageSpeed Insights" if audited_on else "PageSpeed Insights"
+        self.text(label, x + 12, 430, _HALF - 24, size=8.5, color=_MUTED)
+        for i, (name, value) in enumerate(metrics):
+            top = 451 + 33 * i
+            self.line(x + 12, top, x + _HALF - 12)
+            self.text(name, x + 12, top + 9, _HALF - 82, size=9)
+            self.canvas.setFont(_BOLD, 9)
+            self.canvas.setFillColor(_TEAL)
+            self.canvas.drawRightString(x + _HALF - 12, _PAGE_HEIGHT - top - 17, value)
+        self.text(tested_url, x + 12, 587, _HALF - 24, size=7.5, color=_MUTED)
 
     def planning(self, plans):
         self.page("PLANNING", "Next Month Plan", f"Priorities and planned SEO activities after {self.month}.")

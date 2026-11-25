@@ -1,13 +1,15 @@
 import os
 from html import escape
+from typing import Literal
 from urllib.parse import urlsplit
 
 import requests
 from reportlab.platypus import Paragraph
 
 
-def mobile_pagespeed_audit(property_url, *, api_key=None):
-    """Return a point-in-time mobile audit and a safe explanation if unavailable."""
+def pagespeed_audit(property_url, *, strategy: Literal["mobile", "desktop"], api_key=None):
+    """Return a point-in-time Lighthouse audit or a safe explanation if unavailable."""
+    device = strategy.title()
     key = api_key or next((value.strip() for name in (
         "GOOGLE_CLOUD_CONSOLE_KEY", "PAGESPEED_API_KEY", "PAGESPEED_INSIGHTS_API_KEY",
         "PAGE_SPEED_API_KEY", "GOOGLE_API_KEY",
@@ -23,33 +25,37 @@ def mobile_pagespeed_audit(property_url, *, api_key=None):
     except ValueError:
         valid = False
     if not valid:
-        return None, "Mobile audit unavailable: the client needs a valid Search Console website URL."
+        return None, f"{device} audit unavailable: the client needs a valid Search Console website URL."
     if not key:
-        return None, "Mobile audit unavailable: the report server has no PageSpeed API key configured."
+        return None, f"{device} audit unavailable: the report server has no PageSpeed API key configured."
 
     try:
         response = requests.get(
             "https://www.googleapis.com/pagespeedonline/v5/runPagespeed",
-            params={"url": url, "strategy": "mobile", "category": "performance", "key": key},
+            params={"url": url, "strategy": strategy, "category": "performance", "key": key},
             timeout=(5, 60),
         )
         response.raise_for_status()
         result = response.json()["lighthouseResult"]
-        if result.get("runtimeError"):
+        if not isinstance(result, dict) or result.get("runtimeError"):
             raise ValueError("Incomplete Lighthouse audit")
         score = result["categories"]["performance"]["score"]
         if not isinstance(score, (int, float)) or not 0 <= score <= 1:
             raise ValueError("Missing performance score")
     except (requests.RequestException, KeyError, ValueError, TypeError):
-        return None, "The mobile audit was unavailable when this report was generated."
+        return None, f"The {strategy} audit was unavailable when this report was generated."
 
     metrics = [("Performance score", f"{round(score * 100)}/100")]
+    audits = result.get("audits")
+    if not isinstance(audits, dict):
+        audits = {}
     for audit, label in (
         ("largest-contentful-paint", "Largest contentful paint"),
         ("total-blocking-time", "Total blocking time"),
         ("cumulative-layout-shift", "Cumulative layout shift"),
     ):
-        value = result.get("audits", {}).get(audit, {}).get("displayValue")
+        measurement = audits.get(audit)
+        value = measurement.get("displayValue") if isinstance(measurement, dict) else None
         if value:
             metrics.append((label, str(value)))
     return (str(result.get("finalUrl") or url), str(result.get("fetchTime") or ""), metrics), None
@@ -58,7 +64,7 @@ def mobile_pagespeed_audit(property_url, *, api_key=None):
 def pagespeed_section(property_url, heading_style, body_style, *, api_key=None):
     """Build a point-in-time mobile Lighthouse summary for a report."""
     section = [Paragraph("PageSpeed Insights", heading_style)]
-    audit, error = mobile_pagespeed_audit(property_url, api_key=api_key)
+    audit, error = pagespeed_audit(property_url, strategy="mobile", api_key=api_key)
     if audit is None:
         section.append(Paragraph(error, body_style))
         return section
