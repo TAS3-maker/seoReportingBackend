@@ -4,6 +4,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.integrations.credentials import build_source_client
+from app.integrations.ga4.client import GA4DataApiError
 from app.integrations.ga4.service import get_ga4_report
 from app.api.v1.routers.client_routes import (
     get_authenticated_workspace_id,
@@ -54,6 +55,9 @@ def fetch_ga4_report(
             dimensions=request.dimensions,
             metrics=request.metrics,
         )
+    except GA4DataApiError as error:
+        logger.warning("GA4 report request failed", exc_info=True)
+        raise HTTPException(status_code=502, detail=str(error)) from error
     except Exception as error:
         logger.exception("GA4 report request failed")
         raise HTTPException(

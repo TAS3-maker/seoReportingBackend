@@ -1,20 +1,83 @@
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch, sentinel
 
 from bson import ObjectId
+from google.api_core.exceptions import PermissionDenied
+from google.rpc.error_details_pb2 import ErrorInfo
 
+from app.api.v1.routers.analytics_routes import _refresh_status
 from app.api.v1.routers.ga4_routes import fetch_ga4_report
 from app.api.v1.routers.google_sheets_routes import fetch_sheet_values
 from app.api.v1.routers.gsc_routes import (
     fetch_gsc_search_performance,
     fetch_gsc_sites,
 )
+from app.integrations.credentials import build_source_client
+from app.integrations.ga4.service import get_ga4_report
+from app.integrations.google_service_account import SERVICE_ACCOUNT_FIELD
 from app.requestModels.req_models import (
     GA4ReportRequest,
     GSCSearchRequest,
     SheetsDataRequest,
 )
+
+
+class GA4CredentialFallbackTests(unittest.TestCase):
+    def setUp(self):
+        self.client_document = {"workspace_id": str(ObjectId()), "google_connection_id": str(ObjectId())}
+        self.linked = Mock()
+        self.workspace = Mock()
+        self.cloud_client = self.start_patch(
+            "app.integrations.ga4.client.BetaAnalyticsDataClient", side_effect=[self.linked, self.workspace],
+        )
+        self.start_patch("app.integrations.credentials.user_credentials_for_client", return_value=sentinel.oauth)
+        self.secret = self.start_patch("app.integrations.credentials.workspace_secret", return_value="stored JSON")
+        self.parse = self.start_patch(
+            "app.integrations.credentials.service_account_credentials", return_value=sentinel.workspace,
+        )
+
+    def start_patch(self, target, **kwargs):
+        patcher = patch(target, **kwargs)
+        self.addCleanup(patcher.stop)
+        return patcher.start()
+
+    def run_report(self, client):
+        return get_ga4_report(client, "123456789", "2026-10-01", "2026-10-31")
+
+    def test_disabled_linked_project_retries_same_request_with_workspace_credentials(self):
+        self.linked.run_report.side_effect = PermissionDenied("disabled", error_info=ErrorInfo(reason="SERVICE_DISABLED"))
+        client = build_source_client(self.client_document, "ga4")
+        self.secret.assert_not_called()
+
+        self.assertIs(self.run_report(client), self.workspace.run_report.return_value)
+        self.run_report(client)
+
+        self.linked.run_report.assert_called_once()
+        self.assertEqual(self.workspace.run_report.call_count, 2)
+        request = self.linked.run_report.call_args.args[0]
+        self.assertEqual(request.property, "properties/123456789")
+        self.assertEqual(self.workspace.run_report.call_args_list[0].args[0], request)
+        self.secret.assert_called_once_with(self.client_document["workspace_id"], SERVICE_ACCOUNT_FIELD)
+        self.parse.assert_called_once_with("stored JSON", scopes=("https://www.googleapis.com/auth/analytics.readonly",))
+        self.cloud_client.assert_called_with(credentials=sentinel.workspace)
+
+    def test_unrelated_permission_denial_keeps_linked_credentials(self):
+        self.linked.run_report.side_effect = PermissionDenied("property access denied")
+        client = build_source_client(self.client_document, "ga4")
+        with self.assertRaises(PermissionDenied):
+            self.run_report(client)
+        self.secret.assert_not_called()
+        self.workspace.run_report.assert_not_called()
+
+    def test_missing_workspace_key_returns_actionable_refresh_error(self):
+        self.secret.return_value = None
+        self.linked.run_report.side_effect = PermissionDenied("disabled", error_info=ErrorInfo(reason="SERVICE_DISABLED"))
+        client = build_source_client(self.client_document, "ga4")
+        result = _refresh_status(self.run_report, client)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("Workspace Settings", result["detail"])
+        self.workspace.run_report.assert_not_called()
 
 
 class IntegrationRouteTests(unittest.TestCase):

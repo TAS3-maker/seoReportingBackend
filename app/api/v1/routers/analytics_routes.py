@@ -12,6 +12,7 @@ from app.api.v1.routers.client_routes import (
 )
 from app.database.connection import get_database
 from app.integrations.credentials import build_source_client
+from app.integrations.ga4.client import GA4DataApiError
 from app.integrations.ga4.service import get_ga4_report
 from app.integrations.googleSheets.service import get_sheet_data
 from app.integrations.gsc.service import get_search_performance
@@ -778,6 +779,9 @@ def _refresh_status(function, *args) -> dict[str, Any]:
             return {"status": "not_configured", "detail": error.detail}
         logger.exception("Integration refresh failed")
         return {"status": "error", "detail": "Integration refresh failed."}
+    except GA4DataApiError as error:
+        logger.warning("GA4 refresh failed", exc_info=True)
+        return {"status": "error", "detail": str(error)}
     except RefreshError:
         logger.warning("Google token refresh failed", exc_info=True)
         return {

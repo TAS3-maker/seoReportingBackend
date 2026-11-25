@@ -38,26 +38,37 @@ def user_credentials_for_client(client: dict[str, Any]):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
 
 
+def _workspace_credentials(workspace_id: str, source: Source):
+    document = workspace_secret(workspace_id, SERVICE_ACCOUNT_FIELD)
+    if not document:
+        raise HTTPException(409, "Add a Google service account JSON in Workspace Settings to refresh Google data.")
+    try:
+        return service_account_credentials(document, scopes=(SOURCE_SCOPES[source],))
+    except InvalidServiceAccount:
+        raise HTTPException(409, "Replace the Google service account JSON in Workspace Settings.") from None
+
+
 def build_source_client(client: dict[str, Any], source: Source):
-    if client.get("google_connection_id"):
-        credentials = user_credentials_for_client(client)
-    else:
-        document = workspace_secret(client["workspace_id"], SERVICE_ACCOUNT_FIELD)
-        if not document:
-            raise HTTPException(409, "Add a Google service account JSON in Workspace Settings to refresh Google data.")
-        try:
-            credentials = service_account_credentials(document, scopes=(SOURCE_SCOPES[source],))
-        except InvalidServiceAccount:
-            raise HTTPException(409, "Replace the Google service account JSON in Workspace Settings.") from None
+    workspace_id = client["workspace_id"]
+    linked = client.get("google_connection_id")
+    credentials = user_credentials_for_client(client) if linked else _workspace_credentials(workspace_id, source)
 
     if source == "gsc":
         from app.integrations.gsc.client import get_gsc_client
 
         return get_gsc_client(credentials=credentials)
     if source == "ga4":
-        from app.integrations.ga4.client import get_ga4_client
+        from app.integrations.ga4.client import GA4DataApiError, get_ga4_client
 
-        return get_ga4_client(credentials=credentials)
+        def fallback_credentials():
+            try:
+                return _workspace_credentials(workspace_id, "ga4")
+            except HTTPException as error:
+                raise GA4DataApiError(
+                    f"The linked account's Cloud project has the Google Analytics Data API disabled. {error.detail}"
+                ) from error
+
+        return get_ga4_client(credentials=credentials, fallback_credentials=fallback_credentials if linked else None)
     from app.integrations.googleSheets.client import get_sheets_client
 
     return get_sheets_client(credentials=credentials)

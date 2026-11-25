@@ -566,7 +566,7 @@ class _MonthlyReport:
                   _MARGIN, 202, size=9, color=_MUTED)
         top = 220
         if not plans:
-            top = self.note("No planned activities", "Add planned work when generating the report.", _MARGIN, top)
+            self.note("No planned activities", "Add planned work when generating the report.", _MARGIN, top)
         for plan in plans:
             paragraph = self.paragraph(plan, size=9.8, bold=True)
             for part in plan_parts(paragraph, _WIDTH - 51):
@@ -580,14 +580,6 @@ class _MonthlyReport:
                 self.canvas.roundRect(_MARGIN + 12, _PAGE_HEIGHT - top - 24, 10, 10, 2, fill=0, stroke=1)
                 part.drawOn(self.canvas, _MARGIN + 32, _PAGE_HEIGHT - top - 13 - text_height)
                 top += height + 7
-        if top + 154 > _BOTTOM:
-            self.page(*self.section)
-            top = 178
-        top = max(top + 21, 523)
-        top = self.note("What we'll review next month", "Review Search Console visibility and the available GA4 metrics alongside the planned work.",
-                        _MARGIN, top, minimum=62)
-        self.note("Client input needed", "Confirm priorities and approve the proposed activities before work begins.",
-                  _MARGIN, top + 18, minimum=58)
 
     def appendix(self):
         self.page("APPENDIX", "Daily source data", f"{self.month} daily figures from the stored source reports.")
