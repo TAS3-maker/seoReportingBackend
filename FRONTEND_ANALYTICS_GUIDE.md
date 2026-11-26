@@ -119,6 +119,8 @@ Grant the file's `client_email` read access to the configured Search Console pro
 | `GET` | `/api/v1/clients/{client_id}/reports/monthly` | Download this client's monthly PDF. |
 | `GET` | `/api/v1/clients/{client_id}/reports/weekly` | Download this client's weekly PDF. |
 
+For monthly PDFs, send `comparison: true` in the generation request body, or `?comparison=true` when downloading a newly rendered monthly PDF. This shows prior-period figures and explanations for improvements and declines. Omit the flag or send `false` for current-period figures only. The Targeted Keyword Positioning section uses the connected keyword sheet and hides comparison columns when the flag is off.
+
 The monthly view covers the latest completed calendar month and compares it with the previous month. The weekly view covers the latest completed Monday-to-Sunday week and compares it with the previous week. Load the monthly view by default and use the selected client's `client_id` for every data request.
 
 The analytics `GET` routes read stored records for the selected client only; they do not call Google. The refresh `POST` route calls that client's enabled integrations, stores their results with both workspace and client IDs, then rebuilds the dashboard from those records. Its request has **no body**.

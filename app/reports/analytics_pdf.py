@@ -415,7 +415,7 @@ def generate_analytics_pdf(
 ) -> bytes:
     if period == "monthly":
         return generate_monthly_pdf(
-            dashboard, client_name, hide_comparison=comparison, next_plans=next_plans,
+            dashboard, client_name, comparison=comparison, next_plans=next_plans,
             openai_api_key=openai_api_key, google_cloud_console_key=google_cloud_console_key,
         )
     _register_fonts()

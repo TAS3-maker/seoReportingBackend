@@ -36,6 +36,7 @@ _STRIPE = HexColor("#EAF1F5")
 _NOTE = HexColor("#E8EFF6")
 _GREEN = HexColor("#DFF3EA")
 _INSIGHT_GREEN = HexColor("#086345")
+_INSIGHT_RED = HexColor("#9E343B")
 _RED = HexColor("#A43437")
 _BLUE = HexColor("#365E9D")
 _FONT = "Helvetica"
@@ -110,8 +111,13 @@ def _signal_detail(signal):
     return " ".join(filter(None, (signal["fact"], signal.get("meaning") or signal.get("context"))))
 
 
+def _keyword_comparison_column(label):
+    normalized = "".join(character for character in str(label).lower() if character.isalnum())
+    return any(part in normalized for part in ("change", "delta", "previous", "prior", "lastmonth", "monthovermonth", "mom"))
+
+
 class _MonthlyReport:
-    def __init__(self, output, dashboard, client_name, hide_comparison):
+    def __init__(self, output, dashboard, client_name, comparison):
         self.canvas = Canvas(output, pagesize=A4)
         self.canvas.setTitle(f"{client_name} Monthly SEO Report")
         self.canvas.setAuthor("")
@@ -119,7 +125,7 @@ class _MonthlyReport:
         self.canvas.setProducer("")
         self.dashboard = dashboard
         self.client_name = client_name
-        self.hide_comparison = hide_comparison
+        self.comparison = comparison
         self.kpis = {kpi.get("key"): kpi for kpi in dashboard.get("kpis", [])}
         self.tables = dashboard.get("tables", {})
         self.site_url = dashboard.get("sources", {}).get("gsc", {}).get("site_url") or ""
@@ -298,6 +304,8 @@ class _MonthlyReport:
     def data_table(self, key, width, *, limit=None, compact=False):
         data = self.tables.get(key, {})
         columns = data.get("columns", [])
+        if key == "google_sheets" and not self.comparison:
+            columns = [column for column in columns if not _keyword_comparison_column(column)]
         rows = data.get("rows", [])[:limit]
         if not columns or not rows:
             return None
@@ -334,7 +342,7 @@ class _MonthlyReport:
                 raise ValueError(f"Report table cannot fit on a page: {title}")
         return self.draw_table(table, _MARGIN, top, _WIDTH) + 18
 
-    def cover(self, signals, plans):
+    def cover(self, improvements, declines, plans, audits):
         self.page()
         self.box(_MARGIN, 82, _WIDTH, 207, _NAVY, radius=18)
         self.box(53, 107, 4, 24, _AQUA, radius=2)
@@ -346,7 +354,7 @@ class _MonthlyReport:
         label_top = min(235, 253 - label_height)
         title.drawOn(self.canvas, 61, _PAGE_HEIGHT - label_top - label_height)
         span = _range(self.start, self.end)
-        if not self.hide_comparison and self.previous_start and self.previous_end:
+        if self.comparison and self.previous_start and self.previous_end:
             span += f"  /  Compared with {_range(self.previous_start, self.previous_end)}"
         self.text(span, 61, 262, _WIDTH - 50, size=9.2, color=HexColor("#CCE1EA"))
 
@@ -369,51 +377,91 @@ class _MonthlyReport:
                                     x + _THIRD - 67 + 52 * (j + 1) / max(len(values) - 1, 1),
                                     _PAGE_HEIGHT - 370 + 18 * next_value / max(max(values), 1))
                                    for j, (value, next_value) in enumerate(zip(values, values[1:]))])
-            if not self.hide_comparison:
+            if self.comparison:
                 label, color = _change(self.kpis.get(key, {}))
                 tag_width = stringWidth(label, _BOLD, 8) + 14
                 self.box(x + 12, 382, tag_width, 16, HexColor("#FBE8E6") if color == _RED else _GREEN)
                 self.text(label, x + 19, 385, tag_width, size=8, bold=True, color=color)
 
-        self.text("This month in 30 seconds", _MARGIN, 433, size=15, bold=True)
-        clicks = _metric("gsc_clicks", self.kpis.get("gsc_clicks", {}).get("value"))
-        impressions = _metric("gsc_impressions", self.kpis.get("gsc_impressions", {}).get("value"))
-        overview = (f"Search Console recorded {clicks} clicks and {impressions} impressions."
-                    if _MISSING not in (clicks, impressions) else "Search Console totals are unavailable for this period.")
-        summary = (
-            ("Search performance", overview),
-            ("Next month priority", plans[0] if plans else "No next-month activities have been provided."),
-        )
-        top = 466
-        for i, (title, detail) in enumerate(summary, 1):
-            self.box(_MARGIN, top, 29, 29, _GREEN, radius=14)
-            self.text(f"{i:02d}", _MARGIN + 8, top + 8, 25, size=9, bold=True, color=_TEAL)
-            self.text(title, _MARGIN + 42, top + 1, _WIDTH - 42, size=11, bold=True)
+        self.text("Whole month in 30 seconds", _MARGIN, 433, size=15, bold=True)
+        top = 461
+        summary = self.month_summary(plans, audits)
+        if improvements or declines:
+            summary += (("Period changes", f"{len(improvements)} metrics improved and {len(declines)} declined."),)
+        for title, detail in summary:
+            self.text(title, _MARGIN, top, 116, size=9.5, bold=True, color=_TEAL)
             snippet = detail if len(detail) <= 200 else detail[:197] + "..."
-            top += max(44, 27 + self.text(snippet, _MARGIN + 42, top + 18, _WIDTH - 42, color=_MUTED))
-        top += self.text("Period highlights" if self.hide_comparison else "Positive signals",
-                         _MARGIN, top + 6, size=15, bold=True) + 16
-        if not signals:
-            self.note("Highlights unavailable", "No verified highlights are available for the selected period.",
-                      _MARGIN, top)
-        for i, signal in enumerate(signals[:3]):
+            top += max(13, self.text(snippet, _MARGIN + 120, top, _WIDTH - 120, color=_MUTED)) + 8
+        featured_signals = improvements[:3]
+        if not featured_signals:
+            return 0
+        body_height = max(self.paragraph(_signal_detail(signal)).wrap(_THIRD - 24, _PAGE_HEIGHT)[1]
+                          for signal in featured_signals)
+        card_height = max(105, 38 + body_height)
+        if top + 25 + card_height > _BOTTOM:
+            return 0
+        top += self.text("Positive signals", _MARGIN, top + 4, size=15, bold=True) + 14
+        for i, signal in enumerate(featured_signals):
             self.note(signal["title"], _signal_detail(signal), _MARGIN + i * (_THIRD + _GAP), top,
-                      _THIRD, minimum=105, color=_INSIGHT_GREEN, text_color=white)
+                      _THIRD, minimum=card_height, color=_INSIGHT_GREEN, text_color=white)
+        return len(featured_signals)
+
+    def month_summary(self, plans, audits):
+        def totals(fields):
+            values = [(title, _metric(key, self.kpis.get(key, {}).get("value"))) for key, title in fields]
+            return ", ".join(f"{title}: {value}" for title, value in values if value != _MISSING) or "No totals available."
+
+        search = totals((("gsc_clicks", "Clicks"), ("gsc_impressions", "Impressions"),
+                         ("gsc_ctr", "CTR"), ("gsc_position", "Average position")))
+        audience = totals((("ga4_totalUsers", "Users"), ("ga4_sessions", "Sessions"),
+                           ("ga4_screenPageViews", "Page views")))
+        channels = {name: count for name, count in (self.dashboard.get("visitor_channels") or {}).items()
+                    if _number(count) and count > 0}
+        if channels:
+            channel = max(channels, key=channels.get)
+            audience += f" / Top acquisition channel: {channel} ({report_number(channels[channel])} users)"
+
+        pages = len(self.tables.get("top_pages", {}).get("rows", []))
+        queries = len(self.tables.get("top_queries", {}).get("rows", []))
+        keyword_rows = self.tables.get("google_sheets", {}).get("rows", [])
+        rankings = f"{pages} top pages and {queries} search queries shown."
+        rankings += f" {len(keyword_rows)} tracked keyword rows available." if keyword_rows else " No tracked keyword data available."
+        if keyword_rows:
+            first = {name.casefold().strip(): value for name, value in keyword_rows[0].items()}
+            keyword = first.get("keyword") or first.get("target keyword")
+            position = first.get("position") or first.get("current position") or first.get("rank")
+            if keyword and position:
+                rankings += f" Tracked example: {keyword} at position {_metric('position', position)}."
+        speed = []
+        for strategy, (audit, _) in audits.items():
+            score = dict(audit[2]).get("Performance score", "Unavailable") if audit else "Unavailable"
+            speed.append(f"{strategy.title()}: {score}")
+        gsc_days = len(self.tables.get("gsc_daily", {}).get("rows", []))
+        ga4_days = len(self.tables.get("ga4_daily", {}).get("rows", []))
+        plan = f"{len(plans)} planned {'activity' if len(plans) == 1 else 'activities'}. First: {plans[0]}" if plans else "No planned activities supplied."
+        return (
+            ("Search performance", search),
+            ("Audience and traffic", audience),
+            ("Rankings and keywords", rankings),
+            ("PageSpeed scores", " / ".join(speed)),
+            ("Next month", plan),
+            ("Daily source data", f"{gsc_days} Search Console rows and {ga4_days} GA4 rows in the appendix."),
+        )
 
     def performance(self):
-        title = self.month_short if self.hide_comparison else f"{self.month_short} vs. {self.previous}"
+        title = f"{self.month_short} vs. {self.previous}" if self.comparison else self.month_short
         subtitle = "Search Console and GA4 metrics are shown separately."
-        if not self.hide_comparison:
+        if self.comparison:
             subtitle += " Change in click-through rate is shown in percentage points (pp)."
         self.page("PERFORMANCE", title, subtitle)
         labels = ["Measure", self.month_short]
         rows = []
-        if not self.hide_comparison:
+        if self.comparison:
             labels.extend([self.previous, "Change"])
         for key, label in _MEASURES.items():
             kpi = self.kpis.get(key, {})
             row = [label, _metric(key, kpi.get("value"))]
-            if not self.hide_comparison:
+            if self.comparison:
                 change, color = _change(kpi)
                 row.extend([_metric(key, kpi.get("previous_value")),
                             self.paragraph(change, size=8.7, bold=True, color=color)])
@@ -442,10 +490,12 @@ class _MonthlyReport:
                        bars=True, subtitle=self.month)
         previous = self.kpis.get("gsc_impressions", {}).get("previous_value")
         reference = None
-        if not self.hide_comparison and _number(previous) and self.previous_start and self.previous_end:
+        if self.comparison and _number(previous) and self.previous_start and self.previous_end:
             reference = previous / max(1, (self.previous_end - self.previous_start).days + 1)
         self.chart("Daily search impressions", self.series("gsc_daily", "impressions"),
                    _MARGIN + _HALF + _GAP, top, _HALF, 209, subtitle=self.month, reference=reference)
+        if not self.comparison:
+            return
         top += 221
         for i, (key, context, change_context) in enumerate((
             ("gsc_ctr", "This shows the share of Google Search impressions that turned into clicks.",
@@ -458,7 +508,7 @@ class _MonthlyReport:
             previous = _metric(key, kpi.get("previous_value"))
             if current == _MISSING:
                 detail = "No data is available for this metric in the reporting period."
-            elif not self.hide_comparison and previous != _MISSING:
+            elif previous != _MISSING:
                 value, prior = kpi.get("value"), kpi.get("previous_value")
                 if current != previous and _number(value) and _number(prior):
                     if key == "gsc_ctr":
@@ -512,7 +562,9 @@ class _MonthlyReport:
         else:
             self.text("No stored first-user channel data for this period.", 50, 240, color=_MUTED)
             note = "GA4 channel detail is unavailable. Search Console separately measures clicks from Google Search."
-        top = self.note("What this means", note, _MARGIN, 235 + channel_height) + 12
+        top = 235 + channel_height
+        if self.comparison:
+            top = self.note("What this means", note, _MARGIN, top) + 12
         right = _MARGIN + _HALF + _GAP
         engagement_end = self.note("Visitor engagement", "Engagement rate, average engagement time, and pages per session are unavailable.",
                                    _MARGIN, top, _HALF, color=white)
@@ -529,7 +581,7 @@ class _MonthlyReport:
         top = self.table_section("Top performing pages", self.data_table("top_pages", _WIDTH), 176,
                                  "Selected pages, ordered by clicks.")
         pages = self.tables.get("top_pages", {}).get("rows", [])
-        if pages:
+        if self.comparison and pages:
             best = max(pages, key=lambda row: row.get("impressions") or 0)
             if top > 690:
                 self.page(*self.section)
@@ -543,20 +595,25 @@ class _MonthlyReport:
         top = self.table_section("What people searched", self.data_table("top_queries", _WIDTH), top,
                                  "Selected Search Console queries from the stored report.")
         sheets = self.tables.get("google_sheets", {})
-        title = "Google Sheets data (first 20 rows)" if len(sheets.get("rows", [])) > 20 else "Google Sheets data"
-        self.table_section(title, self.data_table("google_sheets", _WIDTH, limit=20), top)
+        title = "Targeted Keyword Positioning"
+        if len(sheets.get("rows", [])) > 20:
+            title += " (first 20 rows)"
+        self.table_section(title, self.data_table("google_sheets", _WIDTH, limit=20), top,
+                           "Current keyword snapshot from the linked sheet.")
 
-    def page_speed(self, google_cloud_console_key):
-        self.page("SITE PERFORMANCE", "PageSpeed Insights",
-                  f"{self.site or 'Website'} / Lab performance measurements taken when the report is generated.")
+    def page_speed_audits(self, google_cloud_console_key):
         strategies = ("mobile", "desktop")
         with ThreadPoolExecutor(max_workers=2) as pool:
-            audits = [pool.submit(pagespeed_audit, self.site_url, strategy=strategy, api_key=google_cloud_console_key)
-                      for strategy in strategies]
-        results = [audit.result() for audit in audits]
+            audits = {strategy: pool.submit(pagespeed_audit, self.site_url, strategy=strategy, api_key=google_cloud_console_key)
+                      for strategy in strategies}
+        return {strategy: audit.result() for strategy, audit in audits.items()}
+
+    def page_speed(self, results):
+        self.page("SITE PERFORMANCE", "PageSpeed Insights",
+                  f"{self.site or 'Website'} / Lab performance measurements taken when the report is generated.")
         top = 176
-        height = 192 if any(audit is not None for audit, _ in results) else 85
-        for i, (strategy, result) in enumerate(zip(strategies, results)):
+        height = 192 if any(audit is not None for audit, _ in results.values()) else 85
+        for i, (strategy, result) in enumerate(results.items()):
             x = _MARGIN + i * (_HALF + _GAP)
             self.pagespeed_card(x, top, height, strategy.title(), *result)
         return top + height + 22
@@ -640,14 +697,25 @@ class _MonthlyReport:
         self.text("Sources: Google Search Console, Google Analytics 4, the linked keyword sheet, and PageSpeed Insights.",
                   _MARGIN, top, color=_MUTED)
 
-    def additional_insights(self, signals):
-        if len(signals) <= 3:
+    def change_insights(self, improvements, declines):
+        if not improvements and not declines:
             return
-        self.page("PERFORMANCE", "Additional report insights", "Highlights based on verified KPIs for this reporting period.")
+        self.page("PERFORMANCE", "Performance insights", "What the verified changes mean for this reporting period.")
         top = 176
-        for signal in signals[3:]:
-            top = self.note(signal["title"], _signal_detail(signal), _MARGIN, top,
-                            color=_INSIGHT_GREEN, text_color=white) + 12
+        for heading, signals, color in (("Declines to review", declines, _INSIGHT_RED),
+                                        ("Positive signals", improvements, _INSIGHT_GREEN)):
+            if not signals:
+                continue
+            if top + 107 > _BOTTOM:
+                self.page(*self.section)
+                top = 176
+            top += self.text(heading, _MARGIN, top, size=15, bold=True) + 10
+            for signal in signals:
+                if top + 80 > _BOTTOM:
+                    self.page(*self.section)
+                    top = 176
+                top = self.note(signal["title"], _signal_detail(signal), _MARGIN, top,
+                                color=color, text_color=white) + 12
 
 
 def plan_parts(paragraph, width):
@@ -660,20 +728,22 @@ def plan_parts(paragraph, width):
             pending.extend(reversed(part.split(width, 460)))
 
 
-def generate_monthly_pdf(dashboard, client_name, *, hide_comparison=False,
+def generate_monthly_pdf(dashboard, client_name, *, comparison=False,
                          next_plans=None, openai_api_key=None, google_cloud_console_key=None):
     output = BytesIO()
-    report = _MonthlyReport(output, dashboard, client_name, hide_comparison)
+    report = _MonthlyReport(output, dashboard, client_name, comparison)
     plans = [plan.strip() for plan in next_plans or () if plan.strip()]
-    signals = report_signals(dashboard.get("kpis", []), hide_comparison, openai_api_key)
-    report.cover(signals, plans)
+    signals = report_signals(dashboard.get("kpis", []), False, openai_api_key, include_declines=True) if comparison else []
+    improvements = [signal for signal in signals if signal["direction"] == "up"]
+    declines = [signal for signal in signals if signal["direction"] == "down"]
+    audits = report.page_speed_audits(google_cloud_console_key)
+    shown = report.cover(improvements, declines, plans, audits)
     report.performance()
+    report.change_insights(improvements[shown:], declines)
     report.audience()
     report.rankings()
-    planning_top = report.page_speed(google_cloud_console_key)
+    planning_top = report.page_speed(audits)
     report.planning(plans, planning_top)
     report.appendix()
-    if openai_api_key:
-        report.additional_insights(signals)
     report.finish()
     return output.getvalue()

@@ -28,8 +28,18 @@ _METRICS = {
                             "Views count how often pages were viewed, including repeat views."),
 }
 
+_DECLINE_CONTEXT = {
+    "gsc_clicks": "Fewer clicks mean Google Search results sent fewer visits to the site during the period.",
+    "gsc_impressions": "Fewer impressions mean the site appeared less often in Google Search.",
+    "gsc_ctr": "A smaller share of Google Search impressions turned into clicks.",
+    "gsc_position": "The site's top result appeared lower in Google Search on average.",
+    "ga4_totalUsers": "GA4 recorded a smaller website audience across all measured traffic channels.",
+    "ga4_sessions": "GA4 recorded fewer visits across all measured traffic channels.",
+    "ga4_screenPageViews": "GA4 recorded fewer page views, including views from repeat visits.",
+}
 
-def report_signals(kpis, hide_comparison, token):
+
+def report_signals(kpis, hide_comparison, token, *, include_declines=False):
     signals = {}
     for kpi in kpis:
         key = kpi.get("key")
@@ -39,8 +49,11 @@ def report_signals(kpis, hide_comparison, token):
         previous = kpi.get("previous_value")
         unit = "%" if key == "gsc_ctr" else ""
         formatter = report_position if key == "gsc_position" else report_number
+        if key == "gsc_ctr" and include_declines:
+            formatter = lambda number: f"{number:.2f}"
         value = f"{formatter(current)}{unit}"
         category, title, context = _METRICS[key]
+        direction = "up"
         if hide_comparison:
             if current <= 0:
                 continue
@@ -49,15 +62,24 @@ def report_signals(kpis, hide_comparison, token):
             if not isinstance(previous, (int, float)) or not math.isfinite(previous):
                 continue
             improved = current < previous if key == "gsc_position" else current > previous
-            if not improved or (key == "gsc_position" and min(previous, current) <= 0):
+            if current == previous or (not improved and not include_declines):
                 continue
+            if key == "gsc_position" and min(previous, current) <= 0:
+                continue
+            direction = "up" if improved else "down"
+            if not improved:
+                context = _DECLINE_CONTEXT[key]
+            change = "Improved" if improved else "Worsened" if key == "gsc_position" else "Declined"
             if key == "gsc_position" and formatter(previous) == formatter(current):
-                fact = f"Average position improved by less than 0.1 to {value}."
+                fact = f"Average position {change.lower()} by less than 0.1 to {value}."
             elif formatter(previous) == formatter(current):
-                continue
+                if not include_declines:
+                    continue
+                amount = "0.01 percentage points" if key == "gsc_ctr" else "0.1"
+                fact = f"{change} by less than {amount}. Current value: {value}."
             else:
-                fact = f"Improved from {formatter(previous)}{unit} to {value}."
-        signals[key] = {"category": category, "title": title, "fact": fact, "context": context}
+                fact = f"{change} from {formatter(previous)}{unit} to {value}."
+        signals[key] = {"category": category, "title": title, "fact": fact, "context": context, "direction": direction}
 
     if not signals or not token:
         return list(signals.values())
@@ -76,7 +98,8 @@ def report_signals(kpis, hide_comparison, token):
                 "model": os.getenv("OPENAI_REPORT_MODEL") or "gpt-4o-mini",
                 "store": False,
                 "instructions": (
-                    "Choose up to four distinct, most informative SEO signals from these verified facts. "
+                    ("Explain every verified improvement and decline supplied. " if include_declines else
+                     "Choose up to four distinct, most informative SEO signals from these verified facts. ") +
                     "For each add one short sentence explaining why the verified result matters. "
                     "Use the metric context for scope and avoid repeating the fact. "
                     "Use no numbers, predictions, causal claims or claims about other metrics. "
@@ -98,6 +121,8 @@ def report_signals(kpis, hide_comparison, token):
             meaning = item["meaning"].strip()
             if key in signals and meaning and len(meaning) <= 220 and not any(c.isdigit() for c in meaning):
                 selected[key] = dict(signals[key], meaning=meaning)
+        if include_declines:
+            return [selected.get(key, signal) for key, signal in signals.items()]
         if selected:
             return list(selected.values())[:4]
     except (requests.RequestException, ValueError, KeyError, TypeError, AttributeError, StopIteration):
