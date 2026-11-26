@@ -1,3 +1,4 @@
+import json
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch, sentinel
@@ -5,6 +6,7 @@ from unittest.mock import Mock, patch, sentinel
 from bson import ObjectId
 from google.api_core.exceptions import PermissionDenied
 from google.rpc.error_details_pb2 import ErrorInfo
+from googleapiclient.errors import HttpError
 
 from app.api.v1.routers.analytics_routes import _refresh_status
 from app.api.v1.routers.ga4_routes import fetch_ga4_report
@@ -16,6 +18,7 @@ from app.api.v1.routers.gsc_routes import (
 from app.integrations.credentials import build_source_client
 from app.integrations.ga4.service import get_ga4_report
 from app.integrations.google_service_account import SERVICE_ACCOUNT_FIELD
+from app.integrations.googleSheets.service import get_sheet_data
 from app.requestModels.req_models import (
     GA4ReportRequest,
     GSCSearchRequest,
@@ -78,6 +81,58 @@ class GA4CredentialFallbackTests(unittest.TestCase):
         self.assertEqual(result["status"], "error")
         self.assertIn("Workspace Settings", result["detail"])
         self.workspace.run_report.assert_not_called()
+
+
+class SheetsCredentialFallbackTests(unittest.TestCase):
+    def setUp(self):
+        self.client_document = {"workspace_id": str(ObjectId()), "google_connection_id": str(ObjectId())}
+        self.linked = Mock()
+        self.workspace = Mock()
+        self.build = self.enterContext(patch("app.integrations.googleSheets.client.build", side_effect=[self.linked, self.workspace]))
+        self.enterContext(patch("app.integrations.credentials.user_credentials_for_client", return_value=sentinel.oauth))
+        self.secret = self.enterContext(patch("app.integrations.credentials.workspace_secret", return_value="stored JSON"))
+        self.parse = self.enterContext(patch("app.integrations.credentials.service_account_credentials", return_value=sentinel.workspace))
+
+    def error(self, reason):
+        body = {"error": {"message": "Forbidden", "details": [{
+            "@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": reason,
+        }]}}
+        return HttpError(SimpleNamespace(status=403, reason="Forbidden"), json.dumps(body).encode())
+
+    def read_values(self):
+        service = build_source_client(self.client_document, "google_sheets")
+        return get_sheet_data(service, "test-spreadsheet", "Keywords!A1:J100")
+
+    def test_disabled_linked_project_retries_same_sheet_and_range_with_workspace_credentials(self):
+        linked_values = self.linked.spreadsheets.return_value.values.return_value
+        workspace_values = self.workspace.spreadsheets.return_value.values.return_value
+        linked_values.get.return_value.execute.side_effect = self.error("SERVICE_DISABLED")
+        workspace_values.get.return_value.execute.return_value = {"values": [["Keyword", "Position"], ["Example", 3]]}
+
+        self.assertEqual(self.read_values(), [["Keyword", "Position"], ["Example", 3]])
+        for values in (linked_values, workspace_values):
+            values.get.assert_called_once_with(spreadsheetId="test-spreadsheet", range="Keywords!A1:J100")
+        self.secret.assert_called_once_with(self.client_document["workspace_id"], SERVICE_ACCOUNT_FIELD)
+        self.parse.assert_called_once_with("stored JSON", scopes=("https://www.googleapis.com/auth/spreadsheets.readonly",))
+        self.build.assert_called_with("sheets", "v4", credentials=sentinel.workspace, cache_discovery=False)
+
+    def test_other_permission_error_does_not_retry_with_workspace_credentials(self):
+        linked_values = self.linked.spreadsheets.return_value.values.return_value
+        linked_values.get.return_value.execute.side_effect = self.error("PERMISSION_DENIED")
+        with self.assertRaises(HttpError):
+            self.read_values()
+        self.secret.assert_not_called()
+        self.workspace.spreadsheets.assert_not_called()
+
+    def test_missing_workspace_key_returns_actionable_refresh_error(self):
+        self.secret.return_value = None
+        linked_values = self.linked.spreadsheets.return_value.values.return_value
+        linked_values.get.return_value.execute.side_effect = self.error("SERVICE_DISABLED")
+        result = _refresh_status(self.read_values)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("Google Sheets API", result["detail"])
+        self.assertIn("Workspace Settings", result["detail"])
+        self.workspace.spreadsheets.assert_not_called()
 
 
 class IntegrationRouteTests(unittest.TestCase):

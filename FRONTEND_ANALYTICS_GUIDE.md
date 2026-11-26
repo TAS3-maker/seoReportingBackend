@@ -102,7 +102,7 @@ const response = await fetch(`${API_BASE_URL}/api/v1/me`, {
 
 A successful upload returns the updated workspace profile with `has_google_service_account: true`. Omit `google_service_account_json` from updates that should preserve the saved credential. The backend encrypts the JSON string using `TOKEN_ENCRYPTION_KEY`, then decrypts and parses it when making Google requests. Profile responses expose its presence only.
 
-Grant the file's `client_email` read access to the configured Search Console property, GA4 property, or spreadsheet. Clients created manually use the workspace service account. Clients linked through Google account import try their linked account first. If Google reports that the Analytics Data API is disabled for the linked account's project, GA4 retries with the workspace service account. The workspace service account needs access to the same GA4 property and the Data API enabled in its own Cloud project.
+Grant the file's `client_email` read access to the configured Search Console property, GA4 property, or spreadsheet. Clients created manually use the workspace service account. Clients linked through Google account import try their linked account first. If Google reports that the Analytics Data API or Google Sheets API is disabled for the linked account's project, that integration retries with the workspace service account. The workspace service account needs access to the same property or spreadsheet and the relevant API enabled in its own Cloud project.
 
 ## Client-scoped data endpoints
 

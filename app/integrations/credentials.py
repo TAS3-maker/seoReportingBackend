@@ -60,15 +60,16 @@ def build_source_client(client: dict[str, Any], source: Source):
     if source == "ga4":
         from app.integrations.ga4.client import GA4DataApiError, get_ga4_client
 
-        def fallback_credentials():
-            try:
-                return _workspace_credentials(workspace_id, "ga4")
-            except HTTPException as error:
-                raise GA4DataApiError(
-                    f"The linked account's Cloud project has the Google Analytics Data API disabled. {error.detail}"
-                ) from error
+        build_client, api_name, api_error = get_ga4_client, "Google Analytics Data API", GA4DataApiError
+    else:
+        from app.integrations.googleSheets.client import SheetsApiError, get_sheets_client
 
-        return get_ga4_client(credentials=credentials, fallback_credentials=fallback_credentials if linked else None)
-    from app.integrations.googleSheets.client import get_sheets_client
+        build_client, api_name, api_error = get_sheets_client, "Google Sheets API", SheetsApiError
 
-    return get_sheets_client(credentials=credentials)
+    def fallback_credentials():
+        try:
+            return _workspace_credentials(workspace_id, source)
+        except HTTPException as error:
+            raise api_error(f"The linked account's Cloud project has the {api_name} disabled. {error.detail}") from error
+
+    return build_client(credentials=credentials, fallback_credentials=fallback_credentials if linked else None)

@@ -4,6 +4,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.integrations.credentials import build_source_client
+from app.integrations.googleSheets.client import SheetsApiError
 from app.integrations.googleSheets.service import get_sheet_data
 from app.api.v1.routers.client_routes import (
     get_authenticated_workspace_id,
@@ -51,6 +52,9 @@ def fetch_sheet_values(
             spreadsheet_id=spreadsheet_id,
             range_name=request.range_name,
         )
+    except SheetsApiError as error:
+        logger.warning("Google Sheets values request failed", exc_info=True)
+        raise HTTPException(status_code=502, detail=str(error)) from error
     except Exception as error:
         logger.exception("Google Sheets values request failed")
         raise HTTPException(
