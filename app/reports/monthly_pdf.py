@@ -37,8 +37,7 @@ _STRIPE = HexColor("#EAF1F5")
 _NOTE = HexColor("#E8EFF6")
 _GREEN = HexColor("#DFF3EA")
 _INSIGHT_GREEN = HexColor("#086345")
-_INSIGHT_RED = HexColor("#9E343B")
-_RED = HexColor("#A43437")
+_SLATE_BLUE = HexColor("#38546E")
 _BLUE = HexColor("#365E9D")
 _FONT = "Helvetica"
 _BOLD = "Helvetica-Bold"
@@ -102,10 +101,10 @@ def _change(kpi):
     magnitude = report_number(abs(value))
     improved = kpi.get("trend") == "up"
     if kpi.get("change_unit") == "positions":
-        return f"{magnitude} positions {'better' if improved else 'worse'}", _TEAL if improved else _RED
+        return f"{magnitude} positions {'better' if improved else 'worse'}", _TEAL if improved else _SLATE_BLUE
     percentage_points = kpi.get("change_unit") == "percentage_points"
     amount = f"{abs(value):.2f} pp" if percentage_points else f"{magnitude}%"
-    return f"{'Up' if value > 0 else 'Down'} {amount}", _TEAL if improved else _RED
+    return f"{'Up' if value > 0 else 'Down'} {amount}", _TEAL if improved else _SLATE_BLUE
 
 
 def _signal_detail(signal):
@@ -392,7 +391,7 @@ class _MonthlyReport:
             if self.show_comparison:
                 label, color = _change(self.kpis.get(key, {}))
                 tag_width = stringWidth(label, _BOLD, 8) + 14
-                self.box(x + 12, 382, tag_width, 16, HexColor("#FBE8E6") if color == _RED else _GREEN)
+                self.box(x + 12, 382, tag_width, 16, _NOTE if color == _SLATE_BLUE else _GREEN)
                 self.text(label, x + 19, 385, tag_width, size=8, bold=True, color=color)
 
         self.text("Whole month in 30 seconds", _MARGIN, 433, size=15, bold=True)
@@ -722,7 +721,7 @@ class _MonthlyReport:
             return
         self.page("PERFORMANCE", "Performance insights", "Verified changes and recommended next steps for the website.")
         top = 176
-        for heading, signals, color in (("Improvement opportunities", declines, _INSIGHT_RED),
+        for heading, signals, color in (("Improvement opportunities", declines, _SLATE_BLUE),
                                         ("Positive signals", improvements, _INSIGHT_GREEN)):
             if not signals:
                 continue
