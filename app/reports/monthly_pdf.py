@@ -16,7 +16,7 @@ from reportlab.pdfgen.canvas import Canvas
 from reportlab.platypus import Paragraph, Table, TableStyle
 
 from app.reports.formatting import report_number, report_position
-from app.reports.insights import report_signals
+from app.reports.insights import DECLINE_NEXT_STEPS, report_signals
 from app.reports.pagespeed import pagespeed_audit
 
 _PAGE_WIDTH, _PAGE_HEIGHT = A4
@@ -523,10 +523,11 @@ class _MonthlyReport:
             elif previous != _MISSING:
                 value, prior = kpi.get("value"), kpi.get("previous_value")
                 if current != previous and _number(value) and _number(prior):
-                    if key == "gsc_ctr":
-                        context = change_context.format("larger" if value > prior else "smaller")
+                    declined = value < prior if key == "gsc_ctr" else value > prior
+                    if declined:
+                        context = f"Next step: {DECLINE_NEXT_STEPS[key]}"
                     else:
-                        context = change_context.format("higher" if value < prior else "lower")
+                        context = change_context.format("larger" if key == "gsc_ctr" else "higher")
                 detail = f"{current} this period, compared with {previous} last period. {context}"
             else:
                 detail = f"{current} this period. {context}"
@@ -719,9 +720,9 @@ class _MonthlyReport:
     def change_insights(self, improvements, declines):
         if not improvements and not declines:
             return
-        self.page("PERFORMANCE", "Performance insights", "What the verified changes mean for this reporting period.")
+        self.page("PERFORMANCE", "Performance insights", "Verified changes and recommended next steps for the website.")
         top = 176
-        for heading, signals, color in (("Declines to review", declines, _INSIGHT_RED),
+        for heading, signals, color in (("Improvement opportunities", declines, _INSIGHT_RED),
                                         ("Positive signals", improvements, _INSIGHT_GREEN)):
             if not signals:
                 continue

@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import unittest
@@ -32,7 +33,8 @@ class ReportsRouteTests(unittest.TestCase):
                 self.assertEqual(b"/URI (" + url + b")" in pdf, count > 10)
 
     @patch("reportlab.rl_config.pageCompression", 0)
-    def test_monthly_pdf_comparison_flag_hides_prior_period_and_insights_when_true(self):
+    @patch("app.reports.insights.requests.post")
+    def test_monthly_pdf_comparison_flag_hides_prior_period_and_insights_when_true(self, openai_request):
         dashboard = {
             "period": {
                 "start_date": "2026-10-01", "end_date": "2026-10-31",
@@ -41,6 +43,7 @@ class ReportsRouteTests(unittest.TestCase):
             "kpis": [
                 {"key": "gsc_clicks", "value": 18, "previous_value": 10, "change": 80, "trend": "up"},
                 {"key": "gsc_impressions", "value": 121, "previous_value": 782, "change": -84.5, "trend": "down"},
+                {"key": "gsc_ctr", "value": 2.3, "previous_value": 8.26, "change": -5.96, "trend": "down"},
             ],
             "charts": {"gsc_daily": {
                 "labels": ["2026-10-01"], "datasets": [{"label": "impressions", "data": [121]}],
@@ -50,18 +53,30 @@ class ReportsRouteTests(unittest.TestCase):
                 "rows": [{"Keyword": "Priority term", "Position": 3, "Previous Position": 5}],
             }},
         }
-        compared = generate_analytics_pdf(dashboard, "monthly", "Test Client", comparison=False)
-        current = generate_analytics_pdf(dashboard, "monthly", "Test Client", comparison=True)
+        openai_request.return_value.json.return_value = {"output": [{"content": [{
+            "type": "output_text",
+            "text": json.dumps({"signals": [
+                {"metric": "gsc_clicks", "meaning": "Visitors reached the site through unpaid search more often."},
+                {"metric": "gsc_ctr", "meaning": "Unsupported cause inserted here."},
+            ]}),
+        }]}]}
+        compared = generate_analytics_pdf(dashboard, "monthly", "Test Client", comparison=False, openai_api_key="test-key")
+        current = generate_analytics_pdf(dashboard, "monthly", "Test Client", comparison=True, openai_api_key="test-key")
 
         for label in (
             b"Compared with", b"October vs. September", b"Period changes", b"Positive signals",
-            b"Declines to review", b"Dashed: previous period average", b"Previous Position",
+            b"Improvement opportunities", b"Dashed: previous period average", b"Previous Position",
         ):
             with self.subTest(label=label):
                 self.assertIn(label, compared)
                 self.assertNotIn(label, current)
         self.assertIn(b"Priority term", compared)
         self.assertIn(b"Priority term", current)
+        self.assertIn(b"Declined from 8.26% to 2.30%", compared)
+        self.assertIn(b"Next step: Review titles and descriptions", compared)
+        self.assertNotIn(b"Unsupported cause inserted here", compared)
+        openai_request.assert_called_once()
+        self.assertEqual(list(json.loads(openai_request.call_args.kwargs["json"]["input"])), ["gsc_clicks"])
 
     def test_monthly_and_weekly_routes_return_database_backed_pdfs(self):
         secret = "test-secret-that-is-at-least-32-bytes"
