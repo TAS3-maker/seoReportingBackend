@@ -1,5 +1,6 @@
 """Presentation for monthly reports, using the existing analytics dashboard data."""
 
+import re
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from html import escape
@@ -321,13 +322,24 @@ class _MonthlyReport:
         table.drawOn(self.canvas, x, _PAGE_HEIGHT - top - height)
         return top + height
 
-    def table_section(self, title, table, top, description=None):
+    def table_section(self, title, table, top, description=None, *, link=None):
         if top > 695:
             self.page(*self.section)
             top = 176
         top += self.text(title, _MARGIN, top, size=15, bold=True) + 5
         if description:
-            top += self.text(description, _MARGIN, top, size=9, color=_MUTED)
+            width = _WIDTH
+            if link:
+                label, url = link
+                label_width = stringWidth(label, _BOLD, 9) + 2
+                label_x = _MARGIN + _WIDTH - label_width
+                linked_label = Paragraph(f'<link href="{escape(url, quote=True)}"><u>{escape(label)}</u></link>',
+                                         ParagraphStyle("KeywordLink", fontName=_BOLD, fontSize=9,
+                                                        leading=11.07, textColor=_TEAL))
+                linked_label.wrap(label_width, _PAGE_HEIGHT)
+                linked_label.drawOn(self.canvas, label_x, _PAGE_HEIGHT - top - linked_label.height)
+                width -= label_width + _GAP
+            top += self.text(description, _MARGIN, top, width, size=9, color=_MUTED)
         top += 6
         while table is not None:
             if table.wrap(_WIDTH, _BOTTOM - top)[1] <= _BOTTOM - top:
@@ -595,11 +607,18 @@ class _MonthlyReport:
         top = self.table_section("What people searched", self.data_table("top_queries", _WIDTH), top,
                                  "Selected Search Console queries from the stored report.")
         sheets = self.tables.get("google_sheets", {})
+        count = len(sheets.get("rows", []))
+        spreadsheet_id = self.dashboard.get("sources", {}).get("google_sheets", {}).get("spreadsheet_id")
+        link = None
+        limit = 20
+        if count > 10 and isinstance(spreadsheet_id, str) and re.fullmatch(r"[A-Za-z0-9_-]+", spreadsheet_id):
+            link = ("View all keywords", f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit")
+            limit = 10
         title = "Targeted Keyword Positioning"
-        if len(sheets.get("rows", [])) > 20:
-            title += " (first 20 rows)"
-        self.table_section(title, self.data_table("google_sheets", _WIDTH, limit=20), top,
-                           "Current keyword snapshot from the linked sheet.")
+        description = "Current keyword snapshot from the linked sheet."
+        if count > limit:
+            description = f"Showing the first {limit} rows from the linked sheet."
+        self.table_section(title, self.data_table("google_sheets", _WIDTH, limit=limit), top, description, link=link)
 
     def page_speed_audits(self, google_cloud_console_key):
         strategies = ("mobile", "desktop")

@@ -8,6 +8,7 @@ from bson import ObjectId
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.reports.analytics_pdf import generate_analytics_pdf
 
 
 class ReportsRouteTests(unittest.TestCase):
@@ -15,6 +16,20 @@ class ReportsRouteTests(unittest.TestCase):
         key_lookup = patch("app.api.v1.routers.reports_routes.workspace_secret", return_value=None)
         key_lookup.start()
         self.addCleanup(key_lookup.stop)
+
+    def test_monthly_pdf_links_to_keyword_sheet_only_above_ten_rows(self):
+        url = b"https://docs.google.com/spreadsheets/d/keyword-sheet_123/edit"
+        for count in (10, 11):
+            with self.subTest(count=count):
+                dashboard = {
+                    "sources": {"google_sheets": {"spreadsheet_id": "keyword-sheet_123"}},
+                    "tables": {"google_sheets": {
+                        "columns": ["Keyword", "Position"],
+                        "rows": [{"Keyword": f"Keyword {i}", "Position": i} for i in range(1, count + 1)],
+                    }},
+                }
+                pdf = generate_analytics_pdf(dashboard, "monthly", "Test Client")
+                self.assertEqual(b"/URI (" + url + b")" in pdf, count > 10)
 
     def test_monthly_and_weekly_routes_return_database_backed_pdfs(self):
         secret = "test-secret-that-is-at-least-32-bytes"

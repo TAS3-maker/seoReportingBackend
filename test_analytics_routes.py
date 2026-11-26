@@ -180,6 +180,7 @@ class AnalyticsRouteTests(unittest.TestCase):
             },
             ("gsc_search_reports", ("page",), current_start.isoformat()): None,
             ("google_sheets_reports", (), None): {
+                "spreadsheet_id": "stored-keyword-sheet",
                 "values": [["Leads", "Month"], [4, "October"]],
             },
         }
@@ -194,7 +195,10 @@ class AnalyticsRouteTests(unittest.TestCase):
             return snapshots.get(key)
 
         find_latest.side_effect = find_snapshot
-        get_workspace_client.return_value = {"name": "Example Client"}
+        get_workspace_client.return_value = {
+            "name": "Example Client",
+            "integrations": {"google_sheets": {"property_id": "newly-configured-sheet"}},
+        }
         result = _dashboard_from_database(
             "workspace-id",
             "client-id",
@@ -220,6 +224,7 @@ class AnalyticsRouteTests(unittest.TestCase):
             result["tables"]["google_sheets"]["columns"],
             ["Leads", "Month"],
         )
+        self.assertEqual(result["sources"]["google_sheets"]["spreadsheet_id"], "stored-keyword-sheet")
 
     @patch("app.api.v1.routers.analytics_routes._dashboard_from_database")
     @patch("app.api.v1.routers.analytics_routes._refresh_sheets")

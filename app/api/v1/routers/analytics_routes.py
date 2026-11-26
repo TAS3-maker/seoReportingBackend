@@ -590,6 +590,9 @@ def _dashboard_from_database(
             "google_sheets": {
                 "status": "available" if sheets else "no_data",
                 "fetched_at": sheets.get("fetched_at") if sheets else None,
+                "spreadsheet_id": (sheets or {}).get("spreadsheet_id") or (
+                    ((client.get("integrations") or {}).get("google_sheets") or {}).get("property_id")
+                ),
             },
         },
         "kpis": kpis,
