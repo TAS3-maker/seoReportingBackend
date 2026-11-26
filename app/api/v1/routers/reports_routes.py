@@ -144,12 +144,14 @@ def get_weekly_report(
     return _report_response("weekly", client_id, user, comparison=comparison, next_plans=next_plans)
 
 
+@reports_router.post("/weekly", response_class=StreamingResponse)
 @reports_router.post("/weekly/generate", response_class=StreamingResponse)
 def generate_weekly_report(
     client_id: str,
-    payload: ReportOptions,
+    payload: ReportOptions | None = None,
     user: dict[str, Any] = Depends(protect_route),
 ) -> StreamingResponse:
+    payload = payload or ReportOptions()
     return _report_response(
         "weekly", client_id, user, comparison=payload.comparison, next_plans=payload.next_plans,
         bounds=_report_bounds(payload),

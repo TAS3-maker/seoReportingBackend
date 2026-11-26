@@ -2,6 +2,7 @@ import json
 import os
 import re
 import unittest
+from datetime import date
 from unittest.mock import patch
 
 import jwt
@@ -158,6 +159,32 @@ class ReportsRouteTests(unittest.TestCase):
                             client_id,
                             period,
                         )
+
+                for route, payload in (
+                    ("weekly", None),
+                    ("weekly", {"start_date": "2026-10-05", "end_date": "2026-10-11"}),
+                    ("weekly/generate", {"start_date": "2026-10-05", "end_date": "2026-10-11"}),
+                ):
+                    with self.subTest(route=route, payload=payload):
+                        with patch(
+                            "app.api.v1.routers.reports_routes._dashboard_from_database",
+                            return_value=dashboard,
+                        ) as get_dashboard:
+                            response = client.post(
+                                f"/api/v1/clients/{client_id}/reports/{route}",
+                                headers={"Authorization": f"Bearer {token}"},
+                                json=payload,
+                            )
+                        self.assertEqual(response.status_code, 200)
+                        self.assertEqual(response.headers["content-type"], "application/pdf")
+                        self.assertTrue(response.content.startswith(b"%PDF-"))
+                        if payload:
+                            get_dashboard.assert_called_once_with(
+                                workspace_id, client_id, "weekly",
+                                bounds=(date(2026, 10, 5), date(2026, 10, 11), date(2026, 9, 28), date(2026, 10, 4)),
+                            )
+                        else:
+                            get_dashboard.assert_called_once_with(workspace_id, client_id, "weekly")
 
     def test_report_can_render_when_no_integration_data_is_stored(self):
         secret = "test-secret-that-is-at-least-32-bytes"

@@ -118,6 +118,7 @@ Grant the file's `client_email` read access to the configured Search Console pro
 | `POST` | `/api/v1/clients/{client_id}/google-sheets/values` | Fetch and store this client's Google Sheets data. |
 | `GET` | `/api/v1/clients/{client_id}/reports/monthly` | Download this client's monthly PDF. |
 | `GET` | `/api/v1/clients/{client_id}/reports/weekly` | Download this client's weekly PDF. |
+| `POST` | `/api/v1/clients/{client_id}/reports/weekly` | Generate and download a weekly PDF. Send an optional JSON body with report dates and options. `/reports/weekly/generate` also accepts this request. |
 
 For monthly PDFs, send `comparison: true` in the generation request body, or `?comparison=true` when downloading a newly rendered monthly PDF, for current-period figures only. Omit the flag or send `false` to show prior-period figures and explanations for improvements and declines. The Targeted Keyword Positioning section hides comparison columns in current-period-only reports. When the connected keyword sheet has more than 10 rows, the PDF shows the first 10 and includes a **View all keywords** link to the spreadsheet.
 
