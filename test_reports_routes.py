@@ -85,7 +85,7 @@ class ReportsRouteTests(unittest.TestCase):
                         self.assertEqual(response.status_code, 200)
                         self.assertEqual(response.headers["content-type"], "application/pdf")
                         self.assertTrue(response.content.startswith(b"%PDF-"))
-                        expected_pages = 7 if period == "monthly" else 1
+                        expected_pages = 6 if period == "monthly" else 1
                         self.assertEqual(len(re.findall(rb"/Type /Page\b", response.content)), expected_pages)
                         self.assertIn(
                             f"seo-report-{period}-2026-10-01-2026-10-31.pdf",
