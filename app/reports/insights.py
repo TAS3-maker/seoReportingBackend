@@ -12,13 +12,20 @@ logger = logging.getLogger(__name__)
 
 # Each supported KPI has a defined scope and direction of improvement.
 _METRICS = {
-    "gsc_clicks": ("Visibility", "Organic search clicks"),
-    "gsc_impressions": ("Visibility", "Search impressions"),
-    "gsc_ctr": ("Visibility", "Search click-through rate"),
-    "gsc_position": ("Rankings", "Average search position"),
-    "ga4_totalUsers": ("Audience", "Website users"),
-    "ga4_sessions": ("Traffic", "Website sessions"),
-    "ga4_screenPageViews": ("Engagement", "Page views"),
+    "gsc_clicks": ("Visibility", "Organic search clicks",
+                   "Search Console counts clicks from unpaid Google Search results to the site."),
+    "gsc_impressions": ("Visibility", "Search impressions",
+                        "Impressions show how often a result from the site appeared in Google Search."),
+    "gsc_ctr": ("Visibility", "Search click-through rate",
+                "This shows what share of Google Search impressions turned into clicks."),
+    "gsc_position": ("Rankings", "Average search position",
+                     "A lower average position means the site's top result appeared closer to the top."),
+    "ga4_totalUsers": ("Audience", "Website users",
+                       "This measures the audience GA4 recorded across all traffic channels."),
+    "ga4_sessions": ("Traffic", "Website sessions",
+                     "Sessions show how many visits GA4 recorded across all traffic channels."),
+    "ga4_screenPageViews": ("Engagement", "Page views",
+                            "Views count how often pages were viewed, including repeat views."),
 }
 
 
@@ -33,7 +40,7 @@ def report_signals(kpis, hide_comparison, token):
         unit = "%" if key == "gsc_ctr" else ""
         formatter = report_position if key == "gsc_position" else report_number
         value = f"{formatter(current)}{unit}"
-        category, title = _METRICS[key]
+        category, title, context = _METRICS[key]
         if hide_comparison:
             if current <= 0:
                 continue
@@ -50,7 +57,7 @@ def report_signals(kpis, hide_comparison, token):
                 continue
             else:
                 fact = f"Improved from {formatter(previous)}{unit} to {value}."
-        signals[key] = {"category": category, "title": title, "fact": fact}
+        signals[key] = {"category": category, "title": title, "fact": fact, "context": context}
 
     if not signals or not token:
         return list(signals.values())
@@ -70,7 +77,8 @@ def report_signals(kpis, hide_comparison, token):
                 "store": False,
                 "instructions": (
                     "Choose up to four distinct, most informative SEO signals from these verified facts. "
-                    "For each explain what the metric means to the client in one short sentence. "
+                    "For each add one short sentence explaining why the verified result matters. "
+                    "Use the metric context for scope and avoid repeating the fact. "
                     "Use no numbers, predictions, causal claims or claims about other metrics. "
                     "GA4 metrics cover all channels. Do not claim a change unless the fact states one."
                 ),

@@ -35,6 +35,7 @@ _GRID = HexColor("#D7E4EA")
 _STRIPE = HexColor("#EAF1F5")
 _NOTE = HexColor("#E8EFF6")
 _GREEN = HexColor("#DFF3EA")
+_INSIGHT_GREEN = HexColor("#086345")
 _RED = HexColor("#A43437")
 _BLUE = HexColor("#365E9D")
 _FONT = "Helvetica"
@@ -103,6 +104,10 @@ def _change(kpi):
     percentage_points = kpi.get("change_unit") == "percentage_points"
     amount = f"{abs(value):.2f} pp" if percentage_points else f"{magnitude}%"
     return f"{'Up' if value > 0 else 'Down'} {amount}", _TEAL if improved else _RED
+
+
+def _signal_detail(signal):
+    return " ".join(filter(None, (signal["fact"], signal.get("meaning") or signal.get("context"))))
 
 
 class _MonthlyReport:
@@ -193,9 +198,9 @@ class _MonthlyReport:
             self.canvas.showPage()
         self.canvas.save()
 
-    def note(self, title, detail, x, top, width=_WIDTH, minimum=55, color=_NOTE):
-        heading = self.paragraph(title, size=9.5, bold=True)
-        body = self.paragraph(detail, size=9, color=_MUTED)
+    def note(self, title, detail, x, top, width=_WIDTH, minimum=55, color=_NOTE, *, text_color=None):
+        heading = self.paragraph(title, size=9.5, bold=True, color=text_color or _INK)
+        body = self.paragraph(detail, size=9, color=text_color or _MUTED)
         heights = [item.wrap(width - 24, _PAGE_HEIGHT)[1] for item in (heading, body)]
         height = max(minimum, 25 + sum(heights))
         self.box(x, top, width, height, color)
@@ -392,8 +397,8 @@ class _MonthlyReport:
             self.note("Highlights unavailable", "No verified highlights are available for the selected period.",
                       _MARGIN, top)
         for i, signal in enumerate(signals[:3]):
-            self.note(signal["title"], signal["fact"], _MARGIN + i * (_THIRD + _GAP), top,
-                      _THIRD, minimum=86, color=_GREEN)
+            self.note(signal["title"], _signal_detail(signal), _MARGIN + i * (_THIRD + _GAP), top,
+                      _THIRD, minimum=105, color=_INSIGHT_GREEN, text_color=white)
 
     def performance(self):
         title = self.month_short if self.hide_comparison else f"{self.month_short} vs. {self.previous}"
@@ -442,12 +447,28 @@ class _MonthlyReport:
         self.chart("Daily search impressions", self.series("gsc_daily", "impressions"),
                    _MARGIN + _HALF + _GAP, top, _HALF, 209, subtitle=self.month, reference=reference)
         top += 221
-        ctr = _metric("gsc_ctr", self.kpis.get("gsc_ctr", {}).get("value"))
-        position = _metric("gsc_position", self.kpis.get("gsc_position", {}).get("value"))
-        self.note("Search click-through rate", f"Reported CTR was {ctr}." if ctr != _MISSING else "CTR data is unavailable.",
-                  _MARGIN, top, _HALF)
-        self.note("Average search position", f"Reported average position was {position}." if position != _MISSING else "Position data is unavailable.",
-                  _MARGIN + _HALF + _GAP, top, _HALF)
+        for i, (key, context, change_context) in enumerate((
+            ("gsc_ctr", "This shows the share of Google Search impressions that turned into clicks.",
+             "A {} share of Google Search impressions turned into clicks."),
+            ("gsc_position", "A lower number means the site's top result appeared closer to the top of Google Search.",
+             "The site's top result appeared {} on the Google Search results page on average."),
+        )):
+            kpi = self.kpis.get(key, {})
+            current = _metric(key, kpi.get("value"))
+            previous = _metric(key, kpi.get("previous_value"))
+            if current == _MISSING:
+                detail = "No data is available for this metric in the reporting period."
+            elif not self.hide_comparison and previous != _MISSING:
+                value, prior = kpi.get("value"), kpi.get("previous_value")
+                if current != previous and _number(value) and _number(prior):
+                    if key == "gsc_ctr":
+                        context = change_context.format("larger" if value > prior else "smaller")
+                    else:
+                        context = change_context.format("higher" if value < prior else "lower")
+                detail = f"{current} this period, compared with {previous} last period. {context}"
+            else:
+                detail = f"{current} this period. {context}"
+            self.note(_MEASURES[key], detail, _MARGIN + i * (_HALF + _GAP), top, _HALF, minimum=80)
 
     def audience(self):
         self.page("AUDIENCE", "Traffic and engagement",
@@ -620,14 +641,13 @@ class _MonthlyReport:
                   _MARGIN, top, color=_MUTED)
 
     def additional_insights(self, signals):
-        notes = [(signal["title"], " ".join(filter(None, (signal["fact"], signal.get("meaning")))))
-                 for i, signal in enumerate(signals) if i >= 3 or signal.get("meaning")]
-        if not notes:
+        if len(signals) <= 3:
             return
         self.page("PERFORMANCE", "Additional report insights", "Highlights based on verified KPIs for this reporting period.")
         top = 176
-        for title, detail in notes:
-            top = self.note(title, detail, _MARGIN, top) + 12
+        for signal in signals[3:]:
+            top = self.note(signal["title"], _signal_detail(signal), _MARGIN, top,
+                            color=_INSIGHT_GREEN, text_color=white) + 12
 
 
 def plan_parts(paragraph, width):
