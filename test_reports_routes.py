@@ -31,6 +31,38 @@ class ReportsRouteTests(unittest.TestCase):
                 pdf = generate_analytics_pdf(dashboard, "monthly", "Test Client")
                 self.assertEqual(b"/URI (" + url + b")" in pdf, count > 10)
 
+    @patch("reportlab.rl_config.pageCompression", 0)
+    def test_monthly_pdf_comparison_flag_hides_prior_period_and_insights_when_true(self):
+        dashboard = {
+            "period": {
+                "start_date": "2026-10-01", "end_date": "2026-10-31",
+                "comparison_start_date": "2026-09-01", "comparison_end_date": "2026-09-30",
+            },
+            "kpis": [
+                {"key": "gsc_clicks", "value": 18, "previous_value": 10, "change": 80, "trend": "up"},
+                {"key": "gsc_impressions", "value": 121, "previous_value": 782, "change": -84.5, "trend": "down"},
+            ],
+            "charts": {"gsc_daily": {
+                "labels": ["2026-10-01"], "datasets": [{"label": "impressions", "data": [121]}],
+            }},
+            "tables": {"google_sheets": {
+                "columns": ["Keyword", "Position", "Previous Position"],
+                "rows": [{"Keyword": "Priority term", "Position": 3, "Previous Position": 5}],
+            }},
+        }
+        compared = generate_analytics_pdf(dashboard, "monthly", "Test Client", comparison=False)
+        current = generate_analytics_pdf(dashboard, "monthly", "Test Client", comparison=True)
+
+        for label in (
+            b"Compared with", b"October vs. September", b"Period changes", b"Positive signals",
+            b"Declines to review", b"Dashed: previous period average", b"Previous Position",
+        ):
+            with self.subTest(label=label):
+                self.assertIn(label, compared)
+                self.assertNotIn(label, current)
+        self.assertIn(b"Priority term", compared)
+        self.assertIn(b"Priority term", current)
+
     def test_monthly_and_weekly_routes_return_database_backed_pdfs(self):
         secret = "test-secret-that-is-at-least-32-bytes"
         workspace_id = str(ObjectId())

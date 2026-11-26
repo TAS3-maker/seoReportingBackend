@@ -126,7 +126,7 @@ class _MonthlyReport:
         self.canvas.setProducer("")
         self.dashboard = dashboard
         self.client_name = client_name
-        self.comparison = comparison
+        self.show_comparison = not comparison
         self.kpis = {kpi.get("key"): kpi for kpi in dashboard.get("kpis", [])}
         self.tables = dashboard.get("tables", {})
         self.site_url = dashboard.get("sources", {}).get("gsc", {}).get("site_url") or ""
@@ -305,7 +305,7 @@ class _MonthlyReport:
     def data_table(self, key, width, *, limit=None, compact=False):
         data = self.tables.get(key, {})
         columns = data.get("columns", [])
-        if key == "google_sheets" and not self.comparison:
+        if key == "google_sheets" and not self.show_comparison:
             columns = [column for column in columns if not _keyword_comparison_column(column)]
         rows = data.get("rows", [])[:limit]
         if not columns or not rows:
@@ -366,7 +366,7 @@ class _MonthlyReport:
         label_top = min(235, 253 - label_height)
         title.drawOn(self.canvas, 61, _PAGE_HEIGHT - label_top - label_height)
         span = _range(self.start, self.end)
-        if self.comparison and self.previous_start and self.previous_end:
+        if self.show_comparison and self.previous_start and self.previous_end:
             span += f"  /  Compared with {_range(self.previous_start, self.previous_end)}"
         self.text(span, 61, 262, _WIDTH - 50, size=9.2, color=HexColor("#CCE1EA"))
 
@@ -389,7 +389,7 @@ class _MonthlyReport:
                                     x + _THIRD - 67 + 52 * (j + 1) / max(len(values) - 1, 1),
                                     _PAGE_HEIGHT - 370 + 18 * next_value / max(max(values), 1))
                                    for j, (value, next_value) in enumerate(zip(values, values[1:]))])
-            if self.comparison:
+            if self.show_comparison:
                 label, color = _change(self.kpis.get(key, {}))
                 tag_width = stringWidth(label, _BOLD, 8) + 14
                 self.box(x + 12, 382, tag_width, 16, HexColor("#FBE8E6") if color == _RED else _GREEN)
@@ -461,19 +461,19 @@ class _MonthlyReport:
         )
 
     def performance(self):
-        title = f"{self.month_short} vs. {self.previous}" if self.comparison else self.month_short
+        title = f"{self.month_short} vs. {self.previous}" if self.show_comparison else self.month_short
         subtitle = "Search Console and GA4 metrics are shown separately."
-        if self.comparison:
+        if self.show_comparison:
             subtitle += " Change in click-through rate is shown in percentage points (pp)."
         self.page("PERFORMANCE", title, subtitle)
         labels = ["Measure", self.month_short]
         rows = []
-        if self.comparison:
+        if self.show_comparison:
             labels.extend([self.previous, "Change"])
         for key, label in _MEASURES.items():
             kpi = self.kpis.get(key, {})
             row = [label, _metric(key, kpi.get("value"))]
-            if self.comparison:
+            if self.show_comparison:
                 change, color = _change(kpi)
                 row.extend([_metric(key, kpi.get("previous_value")),
                             self.paragraph(change, size=8.7, bold=True, color=color)])
@@ -502,11 +502,11 @@ class _MonthlyReport:
                        bars=True, subtitle=self.month)
         previous = self.kpis.get("gsc_impressions", {}).get("previous_value")
         reference = None
-        if self.comparison and _number(previous) and self.previous_start and self.previous_end:
+        if self.show_comparison and _number(previous) and self.previous_start and self.previous_end:
             reference = previous / max(1, (self.previous_end - self.previous_start).days + 1)
         self.chart("Daily search impressions", self.series("gsc_daily", "impressions"),
                    _MARGIN + _HALF + _GAP, top, _HALF, 209, subtitle=self.month, reference=reference)
-        if not self.comparison:
+        if not self.show_comparison:
             return
         top += 221
         for i, (key, context, change_context) in enumerate((
@@ -575,7 +575,7 @@ class _MonthlyReport:
             self.text("No stored first-user channel data for this period.", 50, 240, color=_MUTED)
             note = "GA4 channel detail is unavailable. Search Console separately measures clicks from Google Search."
         top = 235 + channel_height
-        if self.comparison:
+        if self.show_comparison:
             top = self.note("What this means", note, _MARGIN, top) + 12
         right = _MARGIN + _HALF + _GAP
         engagement_end = self.note("Visitor engagement", "Engagement rate, average engagement time, and pages per session are unavailable.",
@@ -593,7 +593,7 @@ class _MonthlyReport:
         top = self.table_section("Top performing pages", self.data_table("top_pages", _WIDTH), 176,
                                  "Selected pages, ordered by clicks.")
         pages = self.tables.get("top_pages", {}).get("rows", [])
-        if self.comparison and pages:
+        if self.show_comparison and pages:
             best = max(pages, key=lambda row: row.get("impressions") or 0)
             if top > 690:
                 self.page(*self.section)
@@ -752,7 +752,10 @@ def generate_monthly_pdf(dashboard, client_name, *, comparison=False,
     output = BytesIO()
     report = _MonthlyReport(output, dashboard, client_name, comparison)
     plans = [plan.strip() for plan in next_plans or () if plan.strip()]
-    signals = report_signals(dashboard.get("kpis", []), False, openai_api_key, include_declines=True) if comparison else []
+    signals = (
+        report_signals(dashboard.get("kpis", []), False, openai_api_key, include_declines=True)
+        if report.show_comparison else []
+    )
     improvements = [signal for signal in signals if signal["direction"] == "up"]
     declines = [signal for signal in signals if signal["direction"] == "down"]
     audits = report.page_speed_audits(google_cloud_console_key)
