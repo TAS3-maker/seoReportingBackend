@@ -103,17 +103,37 @@ class ReportsRouteTests(unittest.TestCase):
 
         for label in (
             b"Weekly SEO Report", b"Whole week in 30 seconds", b"26 Oct 2026 - 01 Nov 2026", b"Daily search clicks",
-            b"Targeted Keyword Positioning", b"Next Week Plan", b"Daily source data",
+            b"Targeted Keyword Positioning", b"Daily source data",
         ):
             self.assertIn(label, compared)
             self.assertIn(label, current)
-        for label in (b"19-25 October 2026", b"Improvement opportunities", b"Next step:", b"WoW"):
+        for label in (b"19-25 October 2026", b"Improvement opportunities", b"Next step:", b"WoW", b"Next Week Plan"):
             self.assertIn(label, compared)
             self.assertNotIn(label, current)
         self.assertIn(b"Review priority pages", compared)
+        self.assertEqual(len(re.findall(rb"/Type /Page\b", current)), 4)
         self.assertEqual(sorted(call.kwargs["strategy"] for call in audit.call_args_list),
                          ["desktop", "desktop", "mobile", "mobile"])
         self.assertTrue(all(call.kwargs["api_key"] == "test-key" for call in audit.call_args_list))
+
+    @patch("reportlab.rl_config.pageCompression", 0)
+    def test_pdf_omits_optional_sections_with_only_blank_inputs(self):
+        dashboard = {
+            "sources": {"google_sheets": {"spreadsheet_id": "keyword-sheet_123"}},
+            "tables": {"google_sheets": {
+                "columns": ["Keyword", "Position", "Previous Position"],
+                "rows": [{"Keyword": "  ", "Position": None, "Previous Position": 2}] * 11,
+            }},
+        }
+        for period, plan_title in (("monthly", b"Next Month Plan"), ("weekly", b"Next Week Plan")):
+            with self.subTest(period=period):
+                pdf = generate_analytics_pdf(dashboard, period, "Test Client", comparison=True, next_plans=[" \n "])
+                self.assertNotIn(b"Targeted Keyword Positioning", pdf)
+                self.assertNotIn(b"View all keywords", pdf)
+                self.assertNotIn(b"No planned activities", pdf)
+                self.assertNotIn(plan_title, pdf)
+                self.assertIn(b"PageSpeed Insights", pdf)
+                self.assertIn(b"Daily source data", pdf)
 
     def test_monthly_and_weekly_routes_return_database_backed_pdfs(self):
         secret = "test-secret-that-is-at-least-32-bytes"
@@ -184,7 +204,7 @@ class ReportsRouteTests(unittest.TestCase):
                         self.assertEqual(response.status_code, 200)
                         self.assertEqual(response.headers["content-type"], "application/pdf")
                         self.assertTrue(response.content.startswith(b"%PDF-"))
-                        self.assertEqual(len(re.findall(rb"/Type /Page\b", response.content)), 6)
+                        self.assertEqual(len(re.findall(rb"/Type /Page\b", response.content)), 6 if period == "monthly" else 4)
                         self.assertIn(
                             f"seo-report-{period}-2026-10-01-2026-10-31.pdf",
                             response.headers["content-disposition"],
@@ -264,4 +284,4 @@ class ReportsRouteTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.content.startswith(b"%PDF-"))
-        self.assertEqual(len(re.findall(rb"/Type /Page\b", response.content)), 6)
+        self.assertEqual(len(re.findall(rb"/Type /Page\b", response.content)), 4)

@@ -316,15 +316,21 @@ class _PeriodReport:
         ]))
         return table
 
-    def data_table(self, key, width, *, limit=None, compact=False):
+    def keyword_data(self):
+        data = self.tables.get("google_sheets", {})
+        columns = [column for column in data.get("columns", [])
+                   if self.show_comparison or not _keyword_comparison_column(column)]
+        rows = [row for row in data.get("rows", [])
+                if any(row.get(column) is not None and str(row[column]).strip() for column in columns)]
+        return columns, rows
+
+    def data_table(self, key, width, *, compact=False):
         data = self.tables.get(key, {})
         columns = data.get("columns", [])
-        if key == "google_sheets" and not self.show_comparison:
-            columns = [column for column in columns if not _keyword_comparison_column(column)]
-        rows = data.get("rows", [])[:limit]
+        rows = data.get("rows", [])
         if not columns or not rows:
             return None
-        labels = [_HEADERS.get(c, c) if key != "google_sheets" else c for c in columns]
+        labels = [_HEADERS.get(c, c) for c in columns]
         weights = [max(2, len(columns) - 2)] + [1] * (len(columns) - 1) if key in ("top_pages", "top_queries") else None
         values = [[_metric(c, row.get(c)) for c in columns] for row in rows]
         return self.table(labels, values, width, weights=weights, compact=compact)
@@ -449,30 +455,33 @@ class _PeriodReport:
 
         pages = len(self.tables.get("top_pages", {}).get("rows", []))
         queries = len(self.tables.get("top_queries", {}).get("rows", []))
-        keyword_rows = self.tables.get("google_sheets", {}).get("rows", [])
-        rankings = f"{pages} top pages and {queries} search queries shown."
-        rankings += f" {len(keyword_rows)} tracked keyword rows available." if keyword_rows else " No tracked keyword data available."
+        keyword_columns, keyword_rows = self.keyword_data()
+        rankings = [f"{pages} top pages and {queries} search queries shown."] if pages or queries else []
         if keyword_rows:
-            first = {name.casefold().strip(): value for name, value in keyword_rows[0].items()}
+            rankings.append(f"{len(keyword_rows)} tracked keyword rows available.")
+            first = {name.casefold().strip(): keyword_rows[0].get(name) for name in keyword_columns}
             keyword = first.get("keyword") or first.get("target keyword")
             position = first.get("position") or first.get("current position") or first.get("rank")
             if keyword and position:
-                rankings += f" Tracked example: {keyword} at position {_metric('position', position)}."
+                rankings.append(f"Tracked example: {keyword} at position {_metric('position', position)}.")
         speed = []
         for strategy, (audit, _) in audits.items():
             score = dict(audit[2]).get("Performance score", "Unavailable") if audit else "Unavailable"
             speed.append(f"{strategy.title()}: {score}")
         gsc_days = len(self.tables.get("gsc_daily", {}).get("rows", []))
         ga4_days = len(self.tables.get("ga4_daily", {}).get("rows", []))
-        plan = f"{len(plans)} planned {'activity' if len(plans) == 1 else 'activities'}. First: {plans[0]}" if plans else "No planned activities supplied."
-        return (
+        summary = [
             ("Search performance", search),
             ("Audience and traffic", audience),
-            ("Rankings and keywords", rankings),
-            ("PageSpeed scores", " / ".join(speed)),
-            (f"Next {self.period_unit}", plan),
-            ("Daily source data", f"{gsc_days} Search Console rows and {ga4_days} GA4 rows in the appendix."),
-        )
+        ]
+        if rankings:
+            summary.append(("Rankings and keywords", " ".join(rankings)))
+        summary.append(("PageSpeed scores", " / ".join(speed)))
+        if plans:
+            activity = "activity" if len(plans) == 1 else "activities"
+            summary.append((f"Next {self.period_unit}", f"{len(plans)} planned {activity}. First: {plans[0]}"))
+        summary.append(("Daily source data", f"{gsc_days} Search Console rows and {ga4_days} GA4 rows in the appendix."))
+        return tuple(summary)
 
     def performance(self):
         if self.weekly:
@@ -608,12 +617,21 @@ class _PeriodReport:
                    right, top, _HALF, 139, color=_BLUE, dots=True)
 
     def rankings(self):
+        page_table = self.data_table("top_pages", _WIDTH)
+        query_table = self.data_table("top_queries", _WIDTH)
+        keyword_columns, keyword_rows = self.keyword_data()
+        if self.weekly and page_table is None and query_table is None and not keyword_rows:
+            return None
+        subtitle = f"{self.period_label} Search Console results."
+        if keyword_rows:
+            subtitle = f"{self.period_label} Search Console results and keyword data from the linked sheet."
         self.page("SEARCH VISIBILITY", "Rankings and top pages",
-                  f"{self.period_label} Search Console results and keyword data from the linked sheet.")
-        top = self.table_section("Top performing pages", self.data_table("top_pages", _WIDTH), 176,
-                                 "Selected pages, ordered by clicks.")
+                  subtitle)
+        top = 176
+        if page_table is not None or not self.weekly:
+            top = self.table_section("Top performing pages", page_table, top, "Selected pages, ordered by clicks.")
         pages = self.tables.get("top_pages", {}).get("rows", [])
-        if self.show_comparison and pages:
+        if self.show_comparison and page_table is not None:
             best = max(pages, key=lambda row: row.get("impressions") or 0)
             if top > 690:
                 self.page(*self.section)
@@ -624,10 +642,12 @@ class _PeriodReport:
             detail = (f"{page} recorded {_metric('impressions', best.get('impressions'))} impressions and "
                       f"{_metric('clicks', best.get('clicks'))} clicks among the pages shown.")
             top = self.note("Highest-visibility page to review", detail, _MARGIN, top, minimum=57) + 18
-        top = self.table_section("What people searched", self.data_table("top_queries", _WIDTH), top,
-                                 "Selected Search Console queries from the stored report.")
-        sheets = self.tables.get("google_sheets", {})
-        count = len(sheets.get("rows", []))
+        if query_table is not None or not self.weekly:
+            top = self.table_section("What people searched", query_table, top,
+                                     "Selected Search Console queries from the stored report.")
+        if not keyword_rows:
+            return top
+        count = len(keyword_rows)
         spreadsheet_id = self.dashboard.get("sources", {}).get("google_sheets", {}).get("spreadsheet_id")
         link = None
         limit = 20
@@ -638,7 +658,9 @@ class _PeriodReport:
         description = "Current keyword snapshot from the linked sheet."
         if count > limit:
             description = f"Showing the first {limit} rows from the linked sheet."
-        self.table_section(title, self.data_table("google_sheets", _WIDTH, limit=limit), top, description, link=link)
+        values = [[_metric(column, row.get(column)) for column in keyword_columns] for row in keyword_rows[:limit]]
+        table = self.table(keyword_columns, values, _WIDTH)
+        return self.table_section(title, table, top, description, link=link)
 
     def page_speed_audits(self, google_cloud_console_key):
         strategies = ("mobile", "desktop")
@@ -647,11 +669,17 @@ class _PeriodReport:
                       for strategy in strategies}
         return {strategy: audit.result() for strategy, audit in audits.items()}
 
-    def page_speed(self, results):
-        self.page("SITE PERFORMANCE", "PageSpeed Insights",
-                  f"{self.site or 'Website'} / Lab performance measurements taken when the report is generated.")
-        top = 176
+    def page_speed(self, results, top):
+        title = "PageSpeed Insights"
+        subtitle = f"{self.site or 'Website'} / Lab performance measurements taken when the report is generated."
         height = 192 if any(audit is not None for audit, _ in results.values()) else 85
+        subtitle_height = self.paragraph(subtitle, size=9).wrap(_WIDTH, _PAGE_HEIGHT)[1]
+        if self.weekly and top is not None and top + 32 + subtitle_height + height <= _BOTTOM:
+            top += self.text(title, _MARGIN, top, size=15, bold=True) + 5
+            top += self.text(subtitle, _MARGIN, top, color=_MUTED) + 8
+        else:
+            self.page("SITE PERFORMANCE", title, subtitle)
+            top = 176
         for i, (strategy, result) in enumerate(results.items()):
             x = _MARGIN + i * (_HALF + _GAP)
             self.pagespeed_card(x, top, height, strategy.title(), *result)
@@ -677,49 +705,70 @@ class _PeriodReport:
         self.text(tested_url, x + 12, top + 158, _HALF - 24, size=7.5, color=_MUTED)
 
     def planning(self, plans, top):
-        title = f"Next {self.period_unit.title()} Plan"
-        top += self.text(title, _MARGIN, top, size=15, bold=True) + 5
-        top += self.text(f"Next {self.period_unit} checklist", _MARGIN, top, size=9, color=_MUTED) + 9
         if not plans:
-            self.note("No planned activities", "Add planned work when generating the report.", _MARGIN, top)
+            return top
+        title = f"Next {self.period_unit.title()} Plan"
+        subtitle = f"Priorities and planned SEO activities after {self.period_label}."
+        checklist = f"Next {self.period_unit} checklist"
+        first_part = next(plan_parts(self.paragraph(plans[0], size=9.8, bold=True), _WIDTH - 51))
+        first_height = first_part.wrap(_WIDTH - 51, _PAGE_HEIGHT)[1]
+        if top + 44 + max(35, first_height + 20) > _BOTTOM:
+            self.page("PLANNING", title, subtitle)
+            top = 176
+        else:
+            top += self.text(title, _MARGIN, top, size=15, bold=True) + 5
+        top += self.text(checklist, _MARGIN, top, size=9, color=_MUTED) + 9
         for plan in plans:
             paragraph = self.paragraph(plan, size=9.8, bold=True)
             for part in plan_parts(paragraph, _WIDTH - 51):
                 _, text_height = part.wrap(_WIDTH - 51, _PAGE_HEIGHT)
                 height = max(35, text_height + 20)
                 if top + height > _BOTTOM:
-                    self.page("PLANNING", title, f"Priorities and planned SEO activities after {self.period_label}.")
+                    self.page("PLANNING", title, subtitle)
                     top = 178
                 self.box(_MARGIN, top, _WIDTH, height, border=True)
                 self.canvas.setStrokeColor(_TEAL)
                 self.canvas.roundRect(_MARGIN + 12, _PAGE_HEIGHT - top - 24, 10, 10, 2, fill=0, stroke=1)
                 part.drawOn(self.canvas, _MARGIN + 32, _PAGE_HEIGHT - top - 13 - text_height)
                 top += height + 7
+        return top + 11
 
-    def appendix(self):
-        self.page("APPENDIX", "Daily source data", f"{self.period_label} daily figures from the stored source reports.")
+    def appendix(self, top):
+        title = "Daily source data"
+        subtitle = f"{self.period_label} daily figures from the stored source reports."
         right = _MARGIN + _HALF + _GAP
         sections = [("Google Search Console", self.data_table("gsc_daily", _HALF, compact=True)),
                     ("Google Analytics 4", self.data_table("ga4_daily", _HALF, compact=True))]
+        sessions = self.series("ga4_daily", "sessions")
+        heights = [table.wrap(_HALF, _PAGE_HEIGHT)[1] if table is not None else 12 for _, table in sections]
+        if sessions:
+            heights[1] += 132
+        if self.weekly and top + max(heights) + 112 <= _BOTTOM:
+            top += self.text(title, _MARGIN, top, size=15, bold=True) + 5
+            top += self.text(subtitle, _MARGIN, top, color=_MUTED) + 12
+        else:
+            self.page("APPENDIX", title, subtitle)
+            top = 176
         while True:
             remaining = []
             ends = []
-            for (title, table), x in zip(sections, (_MARGIN, right)):
-                self.text(title, x, 176, _HALF, size=12, bold=True)
-                if table is not None and table.wrap(_HALF, 508)[1] > 508:
-                    pieces = table.split(_HALF, 508)
+            for (source, table), x in zip(sections, (_MARGIN, right)):
+                self.text(source, x, top, _HALF, size=12, bold=True)
+                table_space = min(508, _BOTTOM - top - 22)
+                if table is not None and table.wrap(_HALF, table_space)[1] > table_space:
+                    pieces = table.split(_HALF, table_space)
                     if len(pieces) != 2:
-                        raise ValueError(f"Daily data cannot fit on the page: {title}")
+                        raise ValueError(f"Daily data cannot fit on the page: {source}")
                     table, rest = pieces
                 else:
                     rest = None
-                ends.append(self.draw_table(table, x, 198, _HALF))
-                remaining.append((title, rest))
+                ends.append(self.draw_table(table, x, top + 22, _HALF))
+                remaining.append((source, rest))
             if not any(table is not None for _, table in remaining):
                 break
             sections = remaining
             self.page(*self.section)
-        sessions = self.series("ga4_daily", "sessions")
+            top = 176
         top = max(ends)
         if sessions:
             chart_top = ends[1] + 12
@@ -734,8 +783,11 @@ class _PeriodReport:
         top += 12
         top += self.text("A dash indicates unavailable data. Counts are shown as reported by each source.",
                          _MARGIN, top, color=_MUTED) + 9
-        self.text("Sources: Google Search Console, Google Analytics 4, the linked keyword sheet, and PageSpeed Insights.",
-                  _MARGIN, top, color=_MUTED)
+        sources = ["Google Search Console", "Google Analytics 4"]
+        if self.keyword_data()[1]:
+            sources.append("the linked keyword sheet")
+        sources.append("PageSpeed Insights")
+        self.text(f"Sources: {', '.join(sources)}.", _MARGIN, top, color=_MUTED)
 
     def change_insights(self, improvements, declines):
         if not improvements and not declines:
@@ -792,9 +844,9 @@ def generate_analytics_pdf(
     report.performance()
     report.change_insights(improvements[shown:], declines)
     report.audience()
-    report.rankings()
-    planning_top = report.page_speed(audits)
-    report.planning(plans, planning_top)
-    report.appendix()
+    rankings_end = report.rankings()
+    planning_top = report.page_speed(audits, rankings_end)
+    appendix_top = report.planning(plans, planning_top)
+    report.appendix(appendix_top)
     report.finish()
     return output.getvalue()
