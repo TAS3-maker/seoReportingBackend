@@ -19,7 +19,7 @@ class ReportsRouteTests(unittest.TestCase):
         key_lookup.start()
         self.addCleanup(key_lookup.stop)
 
-    def test_monthly_pdf_links_to_keyword_sheet_only_above_ten_rows(self):
+    def test_pdfs_link_to_keyword_sheet_only_above_ten_rows(self):
         url = b"https://docs.google.com/spreadsheets/d/keyword-sheet_123/edit"
         for count in (10, 11):
             with self.subTest(count=count):
@@ -30,8 +30,10 @@ class ReportsRouteTests(unittest.TestCase):
                         "rows": [{"Keyword": f"Keyword {i}", "Position": i} for i in range(1, count + 1)],
                     }},
                 }
-                pdf = generate_analytics_pdf(dashboard, "monthly", "Test Client")
-                self.assertEqual(b"/URI (" + url + b")" in pdf, count > 10)
+                for period in ("monthly", "weekly"):
+                    with self.subTest(period=period):
+                        pdf = generate_analytics_pdf(dashboard, period, "Test Client")
+                        self.assertEqual(b"/URI (" + url + b")" in pdf, count > 10)
 
     @patch("reportlab.rl_config.pageCompression", 0)
     @patch("app.reports.insights.requests.post")
@@ -78,6 +80,40 @@ class ReportsRouteTests(unittest.TestCase):
         self.assertNotIn(b"Unsupported cause inserted here", compared)
         openai_request.assert_called_once()
         self.assertEqual(list(json.loads(openai_request.call_args.kwargs["json"]["input"])), ["gsc_clicks"])
+
+    @patch("reportlab.rl_config.pageCompression", 0)
+    @patch("app.reports.analytics_pdf.pagespeed_audit", return_value=(None, "Audit unavailable"))
+    def test_weekly_pdf_uses_weekly_dates_and_shared_report_sections(self, audit):
+        dashboard = {
+            "period": {
+                "start_date": "2026-10-26", "end_date": "2026-11-01",
+                "comparison_start_date": "2026-10-19", "comparison_end_date": "2026-10-25",
+            },
+            "sources": {"gsc": {"site_url": "https://example.com/"}},
+            "kpis": [{"key": "gsc_clicks", "value": 10, "previous_value": 18, "change": -44.4, "trend": "down"}],
+            "tables": {"google_sheets": {
+                "columns": ["Keyword", "Position", "WoW"],
+                "rows": [{"Keyword": "Priority term", "Position": 3, "WoW": 2}],
+            }},
+        }
+        compared = generate_analytics_pdf(dashboard, "weekly", "Test Client", next_plans=["Review priority pages"],
+                                          google_cloud_console_key="test-key")
+        current = generate_analytics_pdf(dashboard, "weekly", "Test Client", comparison=True,
+                                         google_cloud_console_key="test-key")
+
+        for label in (
+            b"Weekly SEO Report", b"Whole week in 30 seconds", b"26 Oct 2026 - 01 Nov 2026", b"Daily search clicks",
+            b"Targeted Keyword Positioning", b"Next Week Plan", b"Daily source data",
+        ):
+            self.assertIn(label, compared)
+            self.assertIn(label, current)
+        for label in (b"19-25 October 2026", b"Improvement opportunities", b"Next step:", b"WoW"):
+            self.assertIn(label, compared)
+            self.assertNotIn(label, current)
+        self.assertIn(b"Review priority pages", compared)
+        self.assertEqual(sorted(call.kwargs["strategy"] for call in audit.call_args_list),
+                         ["desktop", "desktop", "mobile", "mobile"])
+        self.assertTrue(all(call.kwargs["api_key"] == "test-key" for call in audit.call_args_list))
 
     def test_monthly_and_weekly_routes_return_database_backed_pdfs(self):
         secret = "test-secret-that-is-at-least-32-bytes"
@@ -148,8 +184,7 @@ class ReportsRouteTests(unittest.TestCase):
                         self.assertEqual(response.status_code, 200)
                         self.assertEqual(response.headers["content-type"], "application/pdf")
                         self.assertTrue(response.content.startswith(b"%PDF-"))
-                        expected_pages = 6 if period == "monthly" else 1
-                        self.assertEqual(len(re.findall(rb"/Type /Page\b", response.content)), expected_pages)
+                        self.assertEqual(len(re.findall(rb"/Type /Page\b", response.content)), 6)
                         self.assertIn(
                             f"seo-report-{period}-2026-10-01-2026-10-31.pdf",
                             response.headers["content-disposition"],
@@ -229,4 +264,4 @@ class ReportsRouteTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.content.startswith(b"%PDF-"))
-        self.assertEqual(len(re.findall(rb"/Type /Page\b", response.content)), 1)
+        self.assertEqual(len(re.findall(rb"/Type /Page\b", response.content)), 6)
