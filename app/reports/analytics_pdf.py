@@ -133,6 +133,7 @@ class _PeriodReport:
         self.dashboard = dashboard
         self.client_name = client_name
         self.show_comparison = not comparison
+        self.compact_weekly = self.weekly and not self.show_comparison
         self.kpis = {kpi.get("key"): kpi for kpi in dashboard.get("kpis", [])}
         self.tables = dashboard.get("tables", {})
         self.site_url = dashboard.get("sources", {}).get("gsc", {}).get("site_url") or ""
@@ -520,9 +521,10 @@ class _PeriodReport:
                         group = offset // 7
                         weeks[group] = weeks.get(group, 0) + value
         # Keep long custom ranges readable while retaining their full daily breakdown in the appendix.
+        search_height = 175 if self.compact_weekly else 209
         if self.weekly or len(weeks) > 7:
             self.chart("Daily search clicks", clicks,
-                       _MARGIN, top, _HALF, 209, subtitle=self.period_label)
+                       _MARGIN, top, _HALF, search_height, subtitle=self.period_label)
         else:
             days = (self.end - self.start).days + 1 if self.start and self.end else 31
             weekly = [(f"{7 * i + 1}-{min(7 * i + 7, days)}", value) for i, value in sorted(weeks.items())]
@@ -533,7 +535,9 @@ class _PeriodReport:
         if self.show_comparison and _number(previous) and self.previous_start and self.previous_end:
             reference = previous / max(1, (self.previous_end - self.previous_start).days + 1)
         self.chart("Daily search impressions", self.series("gsc_daily", "impressions"),
-                   _MARGIN + _HALF + _GAP, top, _HALF, 209, subtitle=self.period_label, reference=reference)
+                   _MARGIN + _HALF + _GAP, top, _HALF, search_height, subtitle=self.period_label, reference=reference)
+        if self.compact_weekly:
+            self.ga4_charts(top + search_height + _GAP)
         if not self.show_comparison:
             return
         top += 221
@@ -612,22 +616,46 @@ class _PeriodReport:
         visitors_end = self.note("Who visits", "Device split, top locations, and new vs. returning users are unavailable.",
                                  right, top, _HALF, color=white)
         top = max(engagement_end, visitors_end) + 12
+        if self.compact_weekly:
+            return top + 8
+        self.ga4_charts(top)
+
+    def ga4_charts(self, top):
         self.chart("Daily GA4 users", self.series("ga4_daily", "totalUsers"), _MARGIN, top, _HALF, 139, dots=True)
         self.chart("Daily GA4 page views", self.series("ga4_daily", "screenPageViews"),
-                   right, top, _HALF, 139, color=_BLUE, dots=True)
+                   _MARGIN + _HALF + _GAP, top, _HALF, 139, color=_BLUE, dots=True)
 
-    def rankings(self):
+    def rankings(self, top):
         page_table = self.data_table("top_pages", _WIDTH)
         query_table = self.data_table("top_queries", _WIDTH)
         keyword_columns, keyword_rows = self.keyword_data()
         if self.weekly and page_table is None and query_table is None and not keyword_rows:
-            return None
+            return top
+        count = len(keyword_rows)
+        spreadsheet_id = self.dashboard.get("sources", {}).get("google_sheets", {}).get("spreadsheet_id")
+        link = None
+        limit = 20
+        if count > 10 and isinstance(spreadsheet_id, str) and re.fullmatch(r"[A-Za-z0-9_-]+", spreadsheet_id):
+            link = ("View all keywords", f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit")
+            limit = 10
+        keyword_table = None
+        if keyword_rows:
+            values = [[_metric(column, row.get(column)) for column in keyword_columns] for row in keyword_rows[:limit]]
+            keyword_table = self.table(keyword_columns, values, _WIDTH)
+        title = "Rankings and top pages"
         subtitle = f"{self.period_label} Search Console results."
         if keyword_rows:
             subtitle = f"{self.period_label} Search Console results and keyword data from the linked sheet."
-        self.page("SEARCH VISIBILITY", "Rankings and top pages",
-                  subtitle)
-        top = 176
+        section = ("SEARCH VISIBILITY", title, subtitle)
+        first_table = page_table or query_table or keyword_table
+        # Reserve room for both headings, their descriptions, and the table header.
+        if self.compact_weekly and first_table.split(_WIDTH, _BOTTOM - top - 100):
+            self.section = section
+            top += self.text(title, _MARGIN, top, size=15, bold=True) + 5
+            top += self.text(subtitle, _MARGIN, top, color=_MUTED) + _GAP
+        else:
+            self.page(*section)
+            top = 176
         if page_table is not None or not self.weekly:
             top = self.table_section("Top performing pages", page_table, top, "Selected pages, ordered by clicks.")
         pages = self.tables.get("top_pages", {}).get("rows", [])
@@ -645,22 +673,12 @@ class _PeriodReport:
         if query_table is not None or not self.weekly:
             top = self.table_section("What people searched", query_table, top,
                                      "Selected Search Console queries from the stored report.")
-        if not keyword_rows:
+        if keyword_table is None:
             return top
-        count = len(keyword_rows)
-        spreadsheet_id = self.dashboard.get("sources", {}).get("google_sheets", {}).get("spreadsheet_id")
-        link = None
-        limit = 20
-        if count > 10 and isinstance(spreadsheet_id, str) and re.fullmatch(r"[A-Za-z0-9_-]+", spreadsheet_id):
-            link = ("View all keywords", f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit")
-            limit = 10
-        title = "Targeted Keyword Positioning"
         description = "Current keyword snapshot from the linked sheet."
         if count > limit:
             description = f"Showing the first {limit} rows from the linked sheet."
-        values = [[_metric(column, row.get(column)) for column in keyword_columns] for row in keyword_rows[:limit]]
-        table = self.table(keyword_columns, values, _WIDTH)
-        return self.table_section(title, table, top, description, link=link)
+        return self.table_section("Targeted Keyword Positioning", keyword_table, top, description, link=link)
 
     def page_speed_audits(self, google_cloud_console_key):
         strategies = ("mobile", "desktop")
@@ -673,6 +691,10 @@ class _PeriodReport:
         title = "PageSpeed Insights"
         subtitle = f"{self.site or 'Website'} / Lab performance measurements taken when the report is generated."
         height = 192 if any(audit is not None for audit, _ in results.values()) else 85
+        if self.compact_weekly and all(audit is None for audit, _ in results.values()):
+            error_height = max(self.paragraph(error).wrap(_HALF - 24, _PAGE_HEIGHT)[1]
+                               for _, error in results.values())
+            height = 50 + error_height
         subtitle_height = self.paragraph(subtitle, size=9).wrap(_WIDTH, _PAGE_HEIGHT)[1]
         if self.weekly and top is not None and top + 32 + subtitle_height + height <= _BOTTOM:
             top += self.text(title, _MARGIN, top, size=15, bold=True) + 5
@@ -683,7 +705,7 @@ class _PeriodReport:
         for i, (strategy, result) in enumerate(results.items()):
             x = _MARGIN + i * (_HALF + _GAP)
             self.pagespeed_card(x, top, height, strategy.title(), *result)
-        return top + height + 22
+        return top + height + (16 if self.compact_weekly else 22)
 
     def pagespeed_card(self, x, top, height, title, audit, error):
         self.box(x, top, _HALF, height, border=True)
@@ -843,8 +865,8 @@ def generate_analytics_pdf(
     shown = report.cover(improvements, declines, plans, audits)
     report.performance()
     report.change_insights(improvements[shown:], declines)
-    report.audience()
-    rankings_end = report.rankings()
+    audience_end = report.audience()
+    rankings_end = report.rankings(audience_end)
     planning_top = report.page_speed(audits, rankings_end)
     appendix_top = report.planning(plans, planning_top)
     report.appendix(appendix_top)

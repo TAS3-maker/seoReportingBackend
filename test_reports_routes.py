@@ -103,7 +103,7 @@ class ReportsRouteTests(unittest.TestCase):
 
         for label in (
             b"Weekly SEO Report", b"Whole week in 30 seconds", b"26 Oct 2026 - 01 Nov 2026", b"Daily search clicks",
-            b"Targeted Keyword Positioning", b"Daily source data",
+            b"Targeted Keyword Positioning", b"Daily source data", b"Daily GA4 users", b"Daily GA4 page views",
         ):
             self.assertIn(label, compared)
             self.assertIn(label, current)
@@ -111,7 +111,7 @@ class ReportsRouteTests(unittest.TestCase):
             self.assertIn(label, compared)
             self.assertNotIn(label, current)
         self.assertIn(b"Review priority pages", compared)
-        self.assertEqual(len(re.findall(rb"/Type /Page\b", current)), 4)
+        self.assertEqual(len(re.findall(rb"/Type /Page\b", current)), 3)
         self.assertEqual(sorted(call.kwargs["strategy"] for call in audit.call_args_list),
                          ["desktop", "desktop", "mobile", "mobile"])
         self.assertTrue(all(call.kwargs["api_key"] == "test-key" for call in audit.call_args_list))
